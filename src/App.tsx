@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEMO_MATCHES, INITIAL_DEMO_TICKETS } from './data/demoMatches';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { fetchLiveOddsAndStats } from './services/oddsApiService';
 import { AppSettings, MatchAnalysis, Ticket } from './types/betting';
+import { copyMatchForBetano, formatCZK } from './utils/analyticsEngine';
 import { AppTab, Navbar } from './components/Navbar';
 import { MatchFeed } from './components/MatchFeed';
 import { TicketGenerator } from './components/TicketGenerator';
@@ -31,6 +32,7 @@ export default function App() {
 
   const [isSlipOpen, setIsSlipOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const lastAttemptedKeyRef = useRef<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -39,22 +41,41 @@ export default function App() {
     }, 3200);
   }, []);
 
+  const handleOpenBetano = useCallback(
+    (homeTeam: string, awayTeam: string) => {
+      copyMatchForBetano(homeTeam, awayTeam);
+      showToast('Zkopírováno, vlož v Betanu do vyhledávání');
+    },
+    [showToast]
+  );
+
   const handleFetchLiveData = useCallback(async (oddsKey: string, sportsKey: string) => {
-    if (!oddsKey.trim()) {
-      setLiveError('Zadejte platný API klíč pro The Odds API.');
+    const trimmedOdds = oddsKey.trim();
+    const trimmedSports = sportsKey.trim();
+    lastAttemptedKeyRef.current = `${trimmedOdds}::${trimmedSports}`;
+
+    if (!trimmedOdds) {
+      setLiveMatches(null);
+      setLiveStatusMessage(null);
+      setLiveError('Chybí API klíč pro The Odds API. Zadejte klíč v Nastavení nebo zapněte Demo režim.');
       return;
     }
+
     setIsLoadingLive(true);
     setLiveError(null);
     setLiveStatusMessage(null);
     try {
-      const result = await fetchLiveOddsAndStats(oddsKey, sportsKey);
+      const result = await fetchLiveOddsAndStats(trimmedOdds, trimmedSports);
       setLiveMatches(result.matches);
       const quotaNote = result.remainingQuota ? ` · zbývá ${result.remainingQuota} dotazů` : '';
       setLiveStatusMessage(`Načteno ${result.matches.length} aktuálních zápasů z The Odds API${quotaNote}.`);
+      if (result.apiSportsWarning) {
+        setLiveError(`Poznámka z API-Sports: ${result.apiSportsWarning}`);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Nepodařilo se stáhnout kurzy z The Odds API.';
+      setLiveMatches(null);
       setLiveError(message);
     } finally {
       setIsLoadingLive(false);
@@ -62,16 +83,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!settings.demoMode && settings.theOddsApiKey.trim() && !liveMatches && !isLoadingLive) {
+    if (settings.demoMode) {
+      lastAttemptedKeyRef.current = null;
+      return;
+    }
+    const configKey = `${settings.theOddsApiKey.trim()}::${settings.apiSportsKey.trim()}`;
+    if (lastAttemptedKeyRef.current !== configKey) {
       void handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey);
     }
-  }, [settings.demoMode, settings.theOddsApiKey, settings.apiSportsKey, liveMatches, isLoadingLive, handleFetchLiveData]);
+  }, [settings.demoMode, settings.theOddsApiKey, settings.apiSportsKey, handleFetchLiveData]);
 
   const activeMatches = useMemo(() => {
-    if (!settings.demoMode && liveMatches && liveMatches.length > 0) {
-      return liveMatches;
+    if (settings.demoMode) {
+      return DEMO_MATCHES;
     }
-    return DEMO_MATCHES;
+    return liveMatches ?? [];
   }, [settings.demoMode, liveMatches]);
 
   const selectedSlipMatches = useMemo(() => {
@@ -120,6 +146,11 @@ export default function App() {
     showToast('Ukázková historie bankrollu byla obnovena.');
   };
 
+  const handleStartFromScratch = () => {
+    setTickets([]);
+    showToast(`Demo tikety smazány. Počáteční kapitál je ${formatCZK(settings.initialBankroll)}.`);
+  };
+
   return (
     <div className="min-h-screen bg-[#090D16] text-slate-100 flex flex-col">
       <Navbar
@@ -135,7 +166,8 @@ export default function App() {
             matches={activeMatches}
             selectedMatchIds={slipMatchIds}
             onToggleMatchOnSlip={handleToggleMatchOnSlip}
-            isDemoMode={settings.demoMode || !liveMatches}
+            onOpenBetano={handleOpenBetano}
+            isDemoMode={settings.demoMode}
             isLoadingLive={isLoadingLive}
             liveError={liveError}
             onRefreshLive={() => handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey)}
@@ -148,6 +180,7 @@ export default function App() {
             matches={activeMatches}
             currentBankroll={currentBankroll}
             onSaveTicket={handleSaveTicket}
+            onOpenBetano={handleOpenBetano}
           />
         )}
 
@@ -158,6 +191,8 @@ export default function App() {
             onSettleTicket={handleSettleTicket}
             onDeleteTicket={handleDeleteTicket}
             onResetDemoHistory={handleResetDemoHistory}
+            onStartFromScratch={handleStartFromScratch}
+            onOpenBetano={handleOpenBetano}
           />
         )}
 
@@ -168,6 +203,7 @@ export default function App() {
               setSettings(next);
               if (next.demoMode) {
                 setLiveError(null);
+                setLiveStatusMessage(null);
               }
             }}
             onFetchLiveData={handleFetchLiveData}
@@ -193,6 +229,7 @@ export default function App() {
         onRemoveMatch={(id) => setSlipMatchIds((prev) => prev.filter((x) => x !== id))}
         onClearSlip={() => setSlipMatchIds([])}
         onSaveTicket={handleSaveTicket}
+        onOpenBetano={handleOpenBetano}
       />
 
       {toastMessage && (

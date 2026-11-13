@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Ticket, TicketStatus } from '../types/betting';
 import {
-  buildBetanoSearchUrl,
+  BETANO_HOME_URL,
   formatCZK,
   formatOdds,
   formatPercent,
@@ -20,6 +20,8 @@ interface BankrollStatsProps {
   onSettleTicket: (ticketId: string, status: 'won' | 'lost') => void;
   onDeleteTicket: (ticketId: string) => void;
   onResetDemoHistory: () => void;
+  onStartFromScratch: () => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
 }
 
 type StatusFilter = 'all' | TicketStatus;
@@ -39,6 +41,8 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
   onSettleTicket,
   onDeleteTicket,
   onResetDemoHistory,
+  onStartFromScratch,
+  onOpenBetano,
 }) => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
@@ -166,14 +170,25 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
           </h1>
         </div>
 
-        <button
-          type="button"
-          onClick={onResetDemoHistory}
-          className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap self-start sm:self-auto"
-        >
-          <RotateCcw className="h-3.5 w-3.5 text-slate-400" />
-          <span>Obnovit ukázkovou bilanci</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={onStartFromScratch}
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 whitespace-nowrap"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Začít od nuly</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onResetDemoHistory}
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap"
+          >
+            <RotateCcw className="h-3.5 w-3.5 text-slate-400" />
+            <span>Obnovit ukázkovou bilanci</span>
+          </button>
+        </div>
       </div>
 
       {/* 4-Column KPI Grid */}
@@ -483,9 +498,10 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             {formatOdds(leg.betanoOdds)}
                           </span>
                           <a
-                            href={buildBetanoSearchUrl(leg.homeTeam, leg.awayTeam)}
+                            href={BETANO_HOME_URL}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam)}
                             className="inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300"
                             title="Otevřít na Betanu"
                           >

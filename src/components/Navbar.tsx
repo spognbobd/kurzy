@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <>
       {/* Top Bar strictly following 3-zone contract */}
-      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090D16]/90 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090D16]/90 backdrop-blur-md pt-safe-header">
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-8 px-4 sm:px-6 md:h-16">
           {/* Zone 1: Single text element wordmark */}
           <button

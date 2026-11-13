@@ -15,7 +15,7 @@ import {
   Ticket,
 } from '../types/betting';
 import {
-  buildBetanoSearchUrl,
+  BETANO_HOME_URL,
   formatCZK,
   formatOdds,
   formatPercent,
@@ -28,23 +28,25 @@ interface TicketGeneratorProps {
   matches: MatchAnalysis[];
   currentBankroll: number;
   onSaveTicket: (ticket: Ticket) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
 }
 
 const ALL_SPORTS: SportCategory[] = ['Fotbal', 'Hokej', 'Tenis', 'MMA'];
 const RISK_LEVELS: RiskLevel[] = ['Konzervativní', 'Vyvážený', 'Odvážný'];
-const BUDGET_PRESETS = [1000, 2500, 5000, 10000, 25000];
+const BUDGET_PRESETS = [5, 50, 200, 1000, 5000];
 
 export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   matches,
   currentBankroll,
   onSaveTicket,
+  onOpenBetano,
 }) => {
-  const [budget, setBudget] = useState<number>(Math.max(1000, Math.round(currentBankroll)));
+  const [budget, setBudget] = useState<number>(Math.max(5, Math.round(currentBankroll)));
   const [riskLevel, setRiskLevel] = useState<RiskLevel>('Vyvážený');
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(['Fotbal', 'Hokej', 'Tenis', 'MMA']);
   const [variationIndex, setVariationIndex] = useState(0);
   const [generated, setGenerated] = useState<GeneratedTicketResult | null>(null);
-  const [customStake, setCustomStake] = useState<number>(0);
+  const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
 
   useEffect(() => {
@@ -69,7 +71,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   };
 
   const handleGenerate = (nextVariation = 0) => {
-    const res = generateOptimalTicket(matches, selectedSports, riskLevel, budget, nextVariation);
+    const safeBudget = Math.max(5, budget || 5);
+    const res = generateOptimalTicket(matches, selectedSports, riskLevel, safeBudget, nextVariation);
     setVariationIndex(nextVariation);
     setGenerated(res);
     setSavedFeedback(false);
@@ -80,7 +83,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
   const handleSave = () => {
     if (!generated) return;
-    const stake = Math.max(20, customStake || generated.recommendedStake);
+    const stake = Math.max(5, Math.round(customStake || generated.recommendedStake));
     const ticket: Ticket = {
       id: `tkt-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -100,7 +103,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(true);
   };
 
-  const activeStake = Math.max(20, customStake || (generated?.recommendedStake ?? 100));
+  const activeStake = Math.max(5, customStake || (generated?.recommendedStake ?? 5));
   const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
 
   return (
@@ -125,7 +128,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               </label>
               <button
                 type="button"
-                onClick={() => setBudget(Math.max(500, Math.round(currentBankroll)))}
+                onClick={() => setBudget(Math.max(5, Math.round(currentBankroll)))}
                 className="text-xs font-medium text-emerald-400 hover:text-emerald-300"
               >
                 Použít bankroll ({formatCZK(currentBankroll)})
@@ -134,10 +137,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             <input
               id="generator-budget"
               type="number"
-              min={100}
-              step={100}
+              min={5}
+              step={5}
               value={budget}
-              onChange={(e) => setBudget(Math.max(100, Number(e.target.value) || 0))}
+              onChange={(e) => setBudget(Number(e.target.value))}
+              onBlur={() => setBudget((b) => Math.max(5, Math.round(b || 5)))}
               className="mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
             />
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -354,9 +358,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                       </div>
 
                       <a
-                        href={buildBetanoSearchUrl(leg.homeTeam, leg.awayTeam)}
+                        href={BETANO_HOME_URL}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam)}
                         className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                       >
                         <span>Otevřít na Betanu</span>
@@ -376,13 +381,14 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   <input
                     id="actual-stake-input"
                     type="number"
-                    min={20}
-                    step={10}
-                    value={activeStake}
+                    min={5}
+                    step={5}
+                    value={customStake}
                     onChange={(e) => {
-                      setCustomStake(Math.max(20, Number(e.target.value) || 0));
+                      setCustomStake(Number(e.target.value));
                       setSavedFeedback(false);
                     }}
+                    onBlur={() => setCustomStake((s) => Math.max(5, Math.round(s || 5)))}
                     className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
                   />
                 </div>

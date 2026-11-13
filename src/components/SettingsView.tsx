@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   Database,
@@ -29,36 +29,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
-  const [bankroll, setBankroll] = useState(settings.initialBankroll);
+  const [bankroll, setBankroll] = useState<number>(settings.initialBankroll);
   const [demoMode, setDemoMode] = useState(settings.demoMode);
   const [savedNotice, setSavedNotice] = useState(false);
 
-  const handleSave = (e: React.FormEvent) => {
+  useEffect(() => {
+    setOddsKey(settings.theOddsApiKey);
+    setSportsKey(settings.apiSportsKey);
+    setBankroll(settings.initialBankroll);
+    setDemoMode(settings.demoMode);
+  }, [settings]);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedOdds = oddsKey.trim();
-    const effectiveDemo = trimmedOdds === '' ? true : demoMode;
-    setDemoMode(effectiveDemo);
+    const trimmedSports = sportsKey.trim();
+    const safeBankroll = Math.max(5, Math.round(bankroll || 5));
+    setBankroll(safeBankroll);
 
     onUpdateSettings({
       theOddsApiKey: trimmedOdds,
-      apiSportsKey: sportsKey.trim(),
-      demoMode: effectiveDemo,
-      initialBankroll: Math.max(500, bankroll || 10000),
+      apiSportsKey: trimmedSports,
+      demoMode,
+      initialBankroll: safeBankroll,
     });
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
+
+    if (!demoMode) {
+      await onFetchLiveData(trimmedOdds, trimmedSports);
+    }
   };
 
   const handleTestAndLoad = async () => {
     const trimmedOdds = oddsKey.trim();
     const trimmedSports = sportsKey.trim();
+    const safeBankroll = Math.max(5, Math.round(bankroll || 5));
+    setBankroll(safeBankroll);
+    setDemoMode(false);
     onUpdateSettings({
       theOddsApiKey: trimmedOdds,
       apiSportsKey: trimmedSports,
       demoMode: false,
-      initialBankroll: Math.max(500, bankroll || 10000),
+      initialBankroll: safeBankroll,
     });
-    setDemoMode(false);
     await onFetchLiveData(trimmedOdds, trimmedSports);
   };
 
@@ -114,7 +128,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   theOddsApiKey: oddsKey.trim(),
                   apiSportsKey: sportsKey.trim(),
                   demoMode: next,
-                  initialBankroll: Math.max(500, bankroll || 10000),
+                  initialBankroll: Math.max(5, Math.round(bankroll || 5)),
                 });
               }}
               className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${
@@ -177,10 +191,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <input
               id="initial-bankroll"
               type="number"
-              min={500}
-              step={500}
+              min={5}
+              step={5}
               value={bankroll}
-              onChange={(e) => setBankroll(Math.max(500, Number(e.target.value) || 0))}
+              onChange={(e) => setBankroll(Number(e.target.value))}
+              onBlur={() => setBankroll((b) => Math.max(5, Math.round(b || 5)))}
               className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>

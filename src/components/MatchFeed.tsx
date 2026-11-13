@@ -16,7 +16,7 @@ import {
   TimeWindow,
 } from '../types/betting';
 import {
-  buildBetanoSearchUrl,
+  BETANO_HOME_URL,
   formatOdds,
   formatPercent,
 } from '../utils/analyticsEngine';
@@ -26,6 +26,7 @@ interface MatchFeedProps {
   matches: MatchAnalysis[];
   selectedMatchIds: string[];
   onToggleMatchOnSlip: (match: MatchAnalysis) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
   isDemoMode: boolean;
   isLoadingLive: boolean;
   liveError: string | null;
@@ -64,6 +65,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   matches,
   selectedMatchIds,
   onToggleMatchOnSlip,
+  onOpenBetano,
   isDemoMode,
   isLoadingLive,
   liveError,
@@ -300,24 +302,47 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
       ) : filteredMatches.length === 0 ? (
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center">
           <p className="font-display text-lg font-semibold text-slate-200">
-            Pro vybrané filtry nebyly nalezeny žádné zápasy
+            {matches.length === 0 && !isDemoMode
+              ? 'Živé zápasy z API se nepodařilo načíst'
+              : 'Pro vybrané filtry nebyly nalezeny žádné zápasy'}
           </p>
           <p className="mt-1.5 text-sm text-slate-400">
-            Zkuste přepnout časové okno na Všechny dny nebo zrušit filtr pozitivního Value.
+            {matches.length === 0 && !isDemoMode
+              ? 'Demo režim je vypnutý. Zkontrolujte chybu výše, upravte API klíč v Nastavení nebo zkuste kurzy načíst znovu.'
+              : 'Zkuste přepnout časové okno na Všechny dny nebo zrušit filtr pozitivního Value.'}
           </p>
           <div className="mt-5 flex flex-wrap justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setTimeWindow('Vše');
-                setOnlyValueBets(false);
-                setSportFilter('Vše');
-                setSearchQuery('');
-              }}
-              className="min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
-            >
-              Zobrazit všechny zápasy
-            </button>
+            {matches.length === 0 && !isDemoMode ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onRefreshLive}
+                  className="min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
+                >
+                  Zkusit načíst znovu
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  className="min-h-[44px] rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                >
+                  Otevřít Nastavení
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setTimeWindow('Vše');
+                  setOnlyValueBets(false);
+                  setSportFilter('Vše');
+                  setSearchQuery('');
+                }}
+                className="min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
+              >
+                Zobrazit všechny zápasy
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -325,7 +350,6 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           {filteredMatches.map((match) => {
             const isPositiveValue = match.valueScore > 0;
             const isSelected = selectedMatchIds.includes(match.id);
-            const betanoUrl = buildBetanoSearchUrl(match.homeTeam, match.awayTeam);
 
             return (
               <article
@@ -466,9 +490,10 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   </button>
 
                   <a
-                    href={betanoUrl}
+                    href={BETANO_HOME_URL}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={() => onOpenBetano(match.homeTeam, match.awayTeam)}
                     className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                   >
                     <span>Najít na Betanu</span>

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BookmarkCheck, ExternalLink, Trash2, X } from 'lucide-react';
 import { MatchAnalysis, Ticket } from '../types/betting';
 import {
-  buildBetanoSearchUrl,
+  BETANO_HOME_URL,
   calculateSafeStake,
   formatCZK,
   formatOdds,
@@ -17,6 +17,7 @@ interface TicketSlipDrawerProps {
   onRemoveMatch: (matchId: string) => void;
   onClearSlip: () => void;
   onSaveTicket: (ticket: Ticket) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
 }
 
 export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
@@ -27,6 +28,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
   onRemoveMatch,
   onClearSlip,
   onSaveTicket,
+  onOpenBetano,
 }) => {
   const totalOdds = Number(
     selectedMatches.reduce((acc, m) => acc * m.odds.betano, 1).toFixed(2)
@@ -49,11 +51,11 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
 
   if (!isOpen) return null;
 
-  const potentialWin = Math.round(Math.max(20, stake) * totalOdds);
+  const potentialWin = Math.round(Math.max(5, stake || 5) * totalOdds);
 
   const handleSave = () => {
     if (selectedMatches.length === 0) return;
-    const actualStake = Math.max(20, stake);
+    const actualStake = Math.max(5, Math.round(stake || 5));
     const ticket: Ticket = {
       id: `tkt-manual-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -163,9 +165,10 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                       <span className="text-slate-400">AI {formatPercent(m.aiProbability)}</span>
                     </div>
                     <a
-                      href={buildBetanoSearchUrl(m.homeTeam, m.awayTeam)}
+                      href={BETANO_HOME_URL}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={() => onOpenBetano(m.homeTeam, m.awayTeam)}
                       className="inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300"
                     >
                       <span>Betano</span>
@@ -209,10 +212,11 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                 <input
                   id="slip-stake"
                   type="number"
-                  min={20}
-                  step={10}
+                  min={5}
+                  step={5}
                   value={stake}
-                  onChange={(e) => setStake(Math.max(20, Number(e.target.value) || 0))}
+                  onChange={(e) => setStake(Number(e.target.value))}
+                  onBlur={() => setStake((s) => Math.max(5, Math.round(s || 5)))}
                   className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3 font-mono text-sm font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
                 />
               </div>

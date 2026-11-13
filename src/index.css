@@ -28,6 +28,16 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+.pt-safe-header {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 16px);
+}
+
+@media (min-width: 768px) {
+  .pt-safe-header {
+    padding-top: 0px;
+  }
+}
+
 /* Custom sleek dark scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

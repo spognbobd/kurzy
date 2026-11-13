@@ -18,11 +18,38 @@ export function formatPercent(value: number, showSign = false): string {
   return `${formatted} %`;
 }
 
-export function buildBetanoSearchUrl(homeTeam: string, awayTeam: string): string {
+export const BETANO_HOME_URL = 'https://www.betano.cz/';
+
+export function copyMatchForBetano(homeTeam: string, awayTeam: string): string {
   const cleanHome = homeTeam.replace(/\(.*?\)/g, '').trim();
   const cleanAway = awayTeam.replace(/\(.*?\)/g, '').trim();
-  const query = `${cleanHome} ${cleanAway}`.trim();
-  return `https://www.betano.cz/search/?query=${encodeURIComponent(query)}`;
+  const textToCopy = cleanHome || cleanAway;
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(textToCopy).catch(() => {
+      fallbackCopyText(textToCopy);
+    });
+  } else {
+    fallbackCopyText(textToCopy);
+  }
+  return textToCopy;
+}
+
+function fallbackCopyText(text: string) {
+  if (typeof document === 'undefined') return;
+  try {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.setAttribute('readonly', '');
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+  } catch {
+    // Ignore clipboard fallback errors
+  }
 }
 
 /**
@@ -150,7 +177,7 @@ export function calculateSafeStake(
   jointProbabilityPct: number,
   riskLevel: RiskLevel | 'Vlastní'
 ): number {
-  const safeBudget = Math.max(100, budget);
+  const safeBudget = Math.max(5, budget);
   const p = jointProbabilityPct / 100;
   const b = Math.max(0.1, totalOdds - 1);
   const kelly = Math.max(0, (b * p - (1 - p)) / b);
@@ -162,8 +189,10 @@ export function calculateSafeStake(
 
   const pct = Math.min(profile.maxBankrollPct, Math.max(baselinePct * 0.6, fractionalKelly || baselinePct));
   const rawStake = safeBudget * pct;
-  // Round to nearest 10 CZK, minimum 50 CZK
-  return Math.max(50, Math.round(rawStake / 10) * 10);
+  if (rawStake < 50) {
+    return Math.max(5, Math.round(rawStake));
+  }
+  return Math.max(5, Math.round(rawStake / 10) * 10);
 }
 
 export interface GeneratedTicketResult {

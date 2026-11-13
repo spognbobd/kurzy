@@ -81,12 +81,33 @@ function deriveFormFromOdds(impliedProb: number, seedStr: string): FormResult[] 
   return results;
 }
 
+async function extractHttpErrorDetail(res: Response): Promise<string> {
+  try {
+    const raw = await res.text();
+    if (!raw) return res.statusText || 'Bez detailu odpovědi';
+    try {
+      const parsed = JSON.parse(raw) as { message?: string; error?: string; errors?: Record<string, string> };
+      if (parsed.message) return parsed.message;
+      if (parsed.error) return parsed.error;
+      if (parsed.errors && typeof parsed.errors === 'object') {
+        const vals = Object.values(parsed.errors).filter(Boolean);
+        if (vals.length > 0) return vals.join(' | ');
+      }
+    } catch {
+      // plain text fallback
+    }
+    return raw.slice(0, 220);
+  } catch {
+    return res.statusText || 'Chyba čtení HTTP odpovědi';
+  }
+}
+
 async function fetchApiSportsTeamForm(
   teamName: string,
   sport: SportCategory,
   apiKey: string
-): Promise<FormResult[] | null> {
-  if (!apiKey.trim() || (sport !== 'Fotbal' && sport !== 'Hokej')) return null;
+): Promise<{ form: FormResult[] | null; error?: string }> {
+  if (!apiKey.trim() || (sport !== 'Fotbal' && sport !== 'Hokej')) return { form: null };
 
   try {
     const baseUrl =
@@ -97,10 +118,23 @@ async function fetchApiSportsTeamForm(
     const searchRes = await fetch(`${baseUrl}/teams?search=${encodeURIComponent(teamName)}`, {
       headers: { 'x-apisports-key': apiKey.trim() },
     });
-    if (!searchRes.ok) return null;
-    const searchJson = await searchRes.json();
+    if (!searchRes.ok) {
+      const detail = await extractHttpErrorDetail(searchRes);
+      return { form: null, error: `API-Sports HTTP ${searchRes.status}: ${detail}` };
+    }
+    const searchJson = (await searchRes.json()) as {
+      errors?: Record<string, string> | string[];
+      response?: Array<{ team?: { id?: number }; id?: number }>;
+    };
+    if (searchJson.errors && !Array.isArray(searchJson.errors) && Object.keys(searchJson.errors).length > 0) {
+      return {
+        form: null,
+        error: `API-Sports: ${Object.values(searchJson.errors).join(' | ')}`,
+      };
+    }
+
     const teamId = searchJson?.response?.[0]?.team?.id ?? searchJson?.response?.[0]?.id;
-    if (!teamId) return null;
+    if (!teamId) return { form: null };
 
     const fixturePath =
       sport === 'Fotbal'
@@ -110,12 +144,25 @@ async function fetchApiSportsTeamForm(
     const gamesRes = await fetch(fixturePath, {
       headers: { 'x-apisports-key': apiKey.trim() },
     });
-    if (!gamesRes.ok) return null;
-    const gamesJson = await gamesRes.json();
-    const games = gamesJson?.response;
-    if (!Array.isArray(games) || games.length === 0) return null;
+    if (!gamesRes.ok) {
+      const detail = await extractHttpErrorDetail(gamesRes);
+      return { form: null, error: `API-Sports HTTP ${gamesRes.status}: ${detail}` };
+    }
+    const gamesJson = (await gamesRes.json()) as {
+      errors?: Record<string, string> | string[];
+      response?: Array<Record<string, unknown>>;
+    };
+    if (gamesJson.errors && !Array.isArray(gamesJson.errors) && Object.keys(gamesJson.errors).length > 0) {
+      return {
+        form: null,
+        error: `API-Sports: ${Object.values(gamesJson.errors).join(' | ')}`,
+      };
+    }
 
-    return games.slice(0, 5).map((g: Record<string, unknown>) => {
+    const games = gamesJson?.response;
+    if (!Array.isArray(games) || games.length === 0) return { form: null };
+
+    const form = games.slice(0, 5).map((g: Record<string, unknown>) => {
       const teams = g.teams as Record<string, { id?: number; winner?: boolean | null }> | undefined;
       if (!teams) return 'R';
       const isHome = teams.home?.id === teamId;
@@ -124,14 +171,19 @@ async function fetchApiSportsTeamForm(
       if (side?.winner === false) return 'P';
       return 'R';
     });
-  } catch {
-    return null;
+    return { form };
+  } catch (err) {
+    return {
+      form: null,
+      error: `API-Sports síťová chyba: ${err instanceof Error ? err.message : 'Neznámá chyba'}`,
+    };
   }
 }
 
 export interface LiveFetchResult {
   matches: MatchAnalysis[];
   remainingQuota?: string | null;
+  apiSportsWarning?: string | null;
 }
 
 export async function fetchLiveOddsAndStats(
@@ -152,14 +204,21 @@ export async function fetchLiveOddsAndStats(
   const responses = await Promise.allSettled(endpoints.map((url) => fetch(url)));
   let remainingQuota: string | null = null;
   const eventMap = new Map<string, OddsApiEvent>();
+  const httpErrors: string[] = [];
 
   for (const res of responses) {
-    if (res.status !== 'fulfilled') continue;
-    const r = res.value;
-    if (r.status === 401 || r.status === 403) {
-      throw new Error('Neplatný API klíč pro The Odds API nebo vyčerpaný limit.');
+    if (res.status === 'rejected') {
+      httpErrors.push(
+        `Síťová chyba The Odds API: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`
+      );
+      continue;
     }
-    if (!r.ok) continue;
+    const r = res.value;
+    if (!r.ok) {
+      const detail = await extractHttpErrorDetail(r);
+      httpErrors.push(`The Odds API HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ''}: ${detail}`);
+      continue;
+    }
     const quota = r.headers.get('x-requests-remaining');
     if (quota) remainingQuota = quota;
     const data = (await r.json()) as OddsApiEvent[];
@@ -174,10 +233,14 @@ export async function fetchLiveOddsAndStats(
 
   const events = Array.from(eventMap.values()).slice(0, 18);
   if (events.length === 0) {
-    throw new Error('The Odds API nevrátilo žádné nadcházející zápasy s aktivními kurzy.');
+    if (httpErrors.length > 0) {
+      throw new Error(httpErrors[0]);
+    }
+    throw new Error('The Odds API vrátilo HTTP 200, ale žádné nadcházející zápasy s aktivními kurzy.');
   }
 
   const analyzed: MatchAnalysis[] = [];
+  let apiSportsWarning: string | null = null;
 
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
@@ -217,7 +280,6 @@ export async function fetchLiveOddsAndStats(
     const maxHome = Math.max(...homePrices);
     const maxAway = Math.max(...awayPrices);
 
-    // Choose side with larger positive spread against market average
     const homeEdgeRatio = (betanoHome ?? maxHome) / avgHome;
     const awayEdgeRatio = (betanoAway ?? maxAway) / avgAway;
     const pickSide: 'home' | 'away' = homeEdgeRatio >= awayEdgeRatio ? 'home' : 'away';
@@ -233,14 +295,18 @@ export async function fetchLiveOddsAndStats(
     );
     const marketAvg = Number(avgOdds.toFixed(2));
 
-    // Fetch real team form if API-Sports key provided (for first 6 events to preserve quota)
     let formHome: FormResult[] | null = null;
     let formAway: FormResult[] | null = null;
     if (apiSportsKey.trim() && i < 6) {
-      [formHome, formAway] = await Promise.all([
+      const [resHome, resAway] = await Promise.all([
         fetchApiSportsTeamForm(ev.home_team, sport, apiSportsKey),
         fetchApiSportsTeamForm(ev.away_team, sport, apiSportsKey),
       ]);
+      formHome = resHome.form;
+      formAway = resAway.form;
+      if (!apiSportsWarning) {
+        apiSportsWarning = resHome.error ?? resAway.error ?? null;
+      }
     }
 
     const finalFormHome = formHome ?? deriveFormFromOdds((1 / avgHome) * 100, ev.home_team);
@@ -298,5 +364,5 @@ export async function fetchLiveOddsAndStats(
     });
   }
 
-  return { matches: analyzed, remainingQuota };
+  return { matches: analyzed, remainingQuota, apiSportsWarning };
 }
