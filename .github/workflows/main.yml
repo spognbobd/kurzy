@@ -26,12 +26,12 @@ jobs:
 
       - name: Install dependencies & Build Web
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Setup Capacitor & Android
         run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
           if [ ! -f "capacitor.config.json" ] && [ ! -f "capacitor.config.ts" ]; then
             npx cap init "BetEdge AI" "com.betedge.ai" --web-dir=dist
           fi
