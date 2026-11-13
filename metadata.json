@@ -1,0 +1,6 @@
+{
+  "name": "BetEdge AI",
+  "description": "Pokročilý sportovní analytik, vyhledávač hodnotných sázek (Value Bet) a inteligentní generátor tiketů.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
