@@ -15,7 +15,7 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 const DEFAULT_SETTINGS: AppSettings = {
   theOddsApiKey: '',
   apiSportsKey: '',
-  demoMode: true,
+  demoMode: false,
   initialBankroll: 10000,
 };
 

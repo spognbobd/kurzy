@@ -12640,17 +12640,32 @@ function useLocalStorage(key, initialValue) {
 		if (typeof window === "undefined") return initialValue;
 		try {
 			const item = window.localStorage.getItem(key);
-			return item ? JSON.parse(item) : initialValue;
+			if (item === null) return initialValue;
+			const parsed = JSON.parse(item);
+			if (typeof initialValue === "object" && initialValue !== null && !Array.isArray(initialValue) && typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return {
+				...initialValue,
+				...parsed
+			};
+			return parsed;
 		} catch {
 			return initialValue;
 		}
 	});
+	const setValue = (0, import_react.useCallback)((value) => {
+		setStoredValue((prev) => {
+			const nextValue = value instanceof Function ? value(prev) : value;
+			try {
+				window.localStorage.setItem(key, JSON.stringify(nextValue));
+			} catch {}
+			return nextValue;
+		});
+	}, [key]);
 	(0, import_react.useEffect)(() => {
 		try {
 			window.localStorage.setItem(key, JSON.stringify(storedValue));
 		} catch {}
 	}, [key, storedValue]);
-	return [storedValue, setStoredValue];
+	return [storedValue, setValue];
 }
 // src/services/oddsApiService.ts
 function mapSportKey(sportKey, sportTitle) {
@@ -15642,7 +15657,7 @@ var OfflineIndicator = () => {
 var DEFAULT_SETTINGS = {
 	theOddsApiKey: "",
 	apiSportsKey: "",
-	demoMode: true,
+	demoMode: false,
 	initialBankroll: 1e4
 };
 function App() {
