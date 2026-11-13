@@ -102,6 +102,32 @@ async function extractHttpErrorDetail(res: Response): Promise<string> {
   }
 }
 
+function getCurrentSportSeason(): number {
+  const now = new Date();
+  // European football and NHL/Extraliga seasons start in July-September
+  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+function getGameTimestamp(g: Record<string, unknown>): number {
+  const fixture = g.fixture as { timestamp?: number; date?: string } | undefined;
+  if (typeof fixture?.timestamp === 'number') return fixture.timestamp * 1000;
+  if (typeof fixture?.date === 'string') return Date.parse(fixture.date) || 0;
+  if (typeof g.timestamp === 'number') return g.timestamp * 1000;
+  if (typeof g.date === 'string') return Date.parse(g.date) || 0;
+  return 0;
+}
+
+function isFinishedGame(g: Record<string, unknown>, sport: SportCategory): boolean {
+  if (sport === 'Fotbal') {
+    const fixture = g.fixture as { status?: { short?: string } } | undefined;
+    const short = fixture?.status?.short;
+    return !short || short === 'FT' || short === 'AET' || short === 'PEN';
+  }
+  const status = g.status as { short?: string } | undefined;
+  const short = status?.short;
+  return short === 'FT' || short === 'AOT' || short === 'AP';
+}
+
 async function fetchApiSportsTeamForm(
   teamName: string,
   sport: SportCategory,
@@ -136,10 +162,11 @@ async function fetchApiSportsTeamForm(
     const teamId = searchJson?.response?.[0]?.team?.id ?? searchJson?.response?.[0]?.id;
     if (!teamId) return { form: null };
 
+    const season = getCurrentSportSeason();
     const fixturePath =
       sport === 'Fotbal'
-        ? `${baseUrl}/fixtures?team=${teamId}&last=5`
-        : `${baseUrl}/games?team=${teamId}&last=5`;
+        ? `${baseUrl}/fixtures?team=${teamId}&season=${season}&status=FT`
+        : `${baseUrl}/games?team=${teamId}&season=${season}`;
 
     const gamesRes = await fetch(fixturePath, {
       headers: { 'x-apisports-key': apiKey.trim() },
@@ -159,18 +186,36 @@ async function fetchApiSportsTeamForm(
       };
     }
 
-    const games = gamesJson?.response;
-    if (!Array.isArray(games) || games.length === 0) return { form: null };
+    const rawGames = gamesJson?.response;
+    if (!Array.isArray(rawGames) || rawGames.length === 0) return { form: null };
 
-    const form = games.slice(0, 5).map((g: Record<string, unknown>) => {
+    const finishedSorted = rawGames
+      .filter((g) => isFinishedGame(g, sport))
+      .sort((a, b) => getGameTimestamp(a) - getGameTimestamp(b));
+
+    const lastFive = finishedSorted.slice(-5);
+    if (lastFive.length === 0) return { form: null };
+
+    const form = lastFive.map((g: Record<string, unknown>): FormResult => {
       const teams = g.teams as Record<string, { id?: number; winner?: boolean | null }> | undefined;
       if (!teams) return 'R';
       const isHome = teams.home?.id === teamId;
       const side = isHome ? teams.home : teams.away;
       if (side?.winner === true) return 'V';
       if (side?.winner === false) return 'P';
+
+      // Fallback to scores/goals (used by Hockey API v1 where teams.winner is omitted)
+      const scores = (g.scores ?? g.goals) as { home?: number | null; away?: number | null } | undefined;
+      if (typeof scores?.home === 'number' && typeof scores?.away === 'number') {
+        const myScore = isHome ? scores.home : scores.away;
+        const oppScore = isHome ? scores.away : scores.home;
+        if (myScore > oppScore) return 'V';
+        if (myScore < oppScore) return 'P';
+        return 'R';
+      }
       return 'R';
     });
+
     return { form };
   } catch (err) {
     return {

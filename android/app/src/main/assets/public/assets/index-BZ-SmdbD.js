@@ -12747,6 +12747,26 @@ async function extractHttpErrorDetail(res) {
 		return res.statusText || "Chyba čtení HTTP odpovědi";
 	}
 }
+function getCurrentSportSeason() {
+	const now = /* @__PURE__ */ new Date();
+	return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+function getGameTimestamp(g) {
+	const fixture = g.fixture;
+	if (typeof fixture?.timestamp === "number") return fixture.timestamp * 1e3;
+	if (typeof fixture?.date === "string") return Date.parse(fixture.date) || 0;
+	if (typeof g.timestamp === "number") return g.timestamp * 1e3;
+	if (typeof g.date === "string") return Date.parse(g.date) || 0;
+	return 0;
+}
+function isFinishedGame(g, sport) {
+	if (sport === "Fotbal") {
+		const short = g.fixture?.status?.short;
+		return !short || short === "FT" || short === "AET" || short === "PEN";
+	}
+	const short = g.status?.short;
+	return short === "FT" || short === "AOT" || short === "AP";
+}
 async function fetchApiSportsTeamForm(teamName, sport, apiKey) {
 	if (!apiKey.trim() || sport !== "Fotbal" && sport !== "Hokej") return { form: null };
 	try {
@@ -12766,7 +12786,8 @@ async function fetchApiSportsTeamForm(teamName, sport, apiKey) {
 		};
 		const teamId = searchJson?.response?.[0]?.team?.id ?? searchJson?.response?.[0]?.id;
 		if (!teamId) return { form: null };
-		const fixturePath = sport === "Fotbal" ? `${baseUrl}/fixtures?team=${teamId}&last=5` : `${baseUrl}/games?team=${teamId}&last=5`;
+		const season = getCurrentSportSeason();
+		const fixturePath = sport === "Fotbal" ? `${baseUrl}/fixtures?team=${teamId}&season=${season}&status=FT` : `${baseUrl}/games?team=${teamId}&season=${season}`;
 		const gamesRes = await fetch(fixturePath, { headers: { "x-apisports-key": apiKey.trim() } });
 		if (!gamesRes.ok) {
 			const detail = await extractHttpErrorDetail(gamesRes);
@@ -12780,14 +12801,25 @@ async function fetchApiSportsTeamForm(teamName, sport, apiKey) {
 			form: null,
 			error: `API-Sports: ${Object.values(gamesJson.errors).join(" | ")}`
 		};
-		const games = gamesJson?.response;
-		if (!Array.isArray(games) || games.length === 0) return { form: null };
-		return { form: games.slice(0, 5).map((g) => {
+		const rawGames = gamesJson?.response;
+		if (!Array.isArray(rawGames) || rawGames.length === 0) return { form: null };
+		const lastFive = rawGames.filter((g) => isFinishedGame(g, sport)).sort((a, b) => getGameTimestamp(a) - getGameTimestamp(b)).slice(-5);
+		if (lastFive.length === 0) return { form: null };
+		return { form: lastFive.map((g) => {
 			const teams = g.teams;
 			if (!teams) return "R";
-			const side = teams.home?.id === teamId ? teams.home : teams.away;
+			const isHome = teams.home?.id === teamId;
+			const side = isHome ? teams.home : teams.away;
 			if (side?.winner === true) return "V";
 			if (side?.winner === false) return "P";
+			const scores = g.scores ?? g.goals;
+			if (typeof scores?.home === "number" && typeof scores?.away === "number") {
+				const myScore = isHome ? scores.home : scores.away;
+				const oppScore = isHome ? scores.away : scores.home;
+				if (myScore > oppScore) return "V";
+				if (myScore < oppScore) return "P";
+				return "R";
+			}
 			return "R";
 		}) };
 	} catch (err) {
