@@ -11713,6 +11713,41 @@ function evaluateMatchModel(params) {
 		valueScore: Number(((aiProbability / 100 * betanoOdds - 1) * 100).toFixed(1))
 	};
 }
+/**
+* Strips bookmaker margin from 2-way or 3-way odds and computes fair probabilities,
+* margin %, and optional Value % against a comparison bookmaker's favorite odds.
+*/
+function calculateCustomMatchMetrics(params) {
+	const { oddsHome, oddsDraw, oddsAway, comparisonFavoriteOdds } = params;
+	if (!(oddsHome > 1.01) || !(oddsAway > 1.01)) return null;
+	const hasDraw = typeof oddsDraw === "number" && Number.isFinite(oddsDraw) && oddsDraw > 1.01;
+	const rawHome = 1 / oddsHome;
+	const rawDraw = hasDraw ? 1 / oddsDraw : 0;
+	const rawAway = 1 / oddsAway;
+	const overround = rawHome + rawDraw + rawAway;
+	if (!(overround > 0)) return null;
+	const bookmakerMarginPct = Number(((overround - 1) * 100).toFixed(1));
+	const fairProbHome = Number((rawHome / overround * 100).toFixed(1));
+	const fairProbAway = Number((rawAway / overround * 100).toFixed(1));
+	const fairProbDraw = hasDraw ? Number((rawDraw / overround * 100).toFixed(1)) : null;
+	const favoriteSide = fairProbHome >= fairProbAway ? "home" : "away";
+	const favoriteOdds = Number((favoriteSide === "home" ? oddsHome : oddsAway).toFixed(2));
+	const favoriteFairProb = Number(Math.min(95, Math.max(5, favoriteSide === "home" ? fairProbHome : fairProbAway)).toFixed(1));
+	const favoriteImpliedProb = Number((1 / favoriteOdds * 100).toFixed(1));
+	const hasComparison = typeof comparisonFavoriteOdds === "number" && Number.isFinite(comparisonFavoriteOdds) && comparisonFavoriteOdds > 1.01;
+	return {
+		fairProbHome,
+		fairProbDraw,
+		fairProbAway,
+		bookmakerMarginPct,
+		favoriteSide,
+		favoriteOdds,
+		favoriteFairProb,
+		favoriteImpliedProb,
+		valueScore: hasComparison ? Number(((favoriteOdds / comparisonFavoriteOdds - 1) * 100).toFixed(1)) : 0,
+		marketAvgOdds: hasComparison ? Number(comparisonFavoriteOdds.toFixed(2)) : favoriteOdds
+	};
+}
 var RISK_PROFILES = {
 	Konzervativní: {
 		label: "Konzervativní",
@@ -12450,6 +12485,78 @@ var DEMO_MATCHES = [
 		h2hSummary: "1V - 0P (KO ve 2. kole)",
 		calibrationOffset: 1.1,
 		reasoning: "Topuria je neporažený s pěti výhrami v řadě a v prvním vzájemném souboji dominoval v boxu. Kurz 1.48 na Betanu je výše než světový průměr 1.43."
+	},
+	{
+		id: "bk-nba-1",
+		sport: "Basketbal",
+		league: "NBA",
+		timeWindow: "Dnes",
+		kickoffTime: "Dnes 01:30",
+		kickoffIso: "2026-11-13T01:30:00Z",
+		homeTeam: "Boston Celtics",
+		awayTeam: "Milwaukee Bucks",
+		recommendedPick: "Výhra Boston Celtics (1)",
+		marketLabel: "Vítěz zápasu",
+		pickSide: "home",
+		betano: 1.66,
+		tipsport: 1.61,
+		marketAvg: 1.59,
+		formHome: [
+			"V",
+			"V",
+			"V",
+			"P",
+			"V"
+		],
+		formAway: [
+			"P",
+			"V",
+			"P",
+			"V",
+			"P"
+		],
+		h2hHomeWins: 4,
+		h2hDraws: 0,
+		h2hAwayWins: 1,
+		h2hSummary: "4V - 1P pro Boston",
+		calibrationOffset: 1.6,
+		reasoning: "Celtics v TD Garden drží nejlepší bilanci ofenzivního ratingu v NBA a ovládli 4 z posledních 5 vzájemných duelů. Betano kurz 1.66 leží nad průměrem trhu 1.59."
+	},
+	{
+		id: "bk-el-1",
+		sport: "Basketbal",
+		league: "Euroliga",
+		timeWindow: "Zítra",
+		kickoffTime: "Zítra 20:15",
+		kickoffIso: "2026-11-13T20:15:00Z",
+		homeTeam: "Panathinaikos",
+		awayTeam: "Fenerbahce",
+		recommendedPick: "Výhra Panathinaikos (1)",
+		marketLabel: "Vítěz zápasu",
+		pickSide: "home",
+		betano: 1.84,
+		tipsport: 1.78,
+		marketAvg: 1.75,
+		formHome: [
+			"V",
+			"V",
+			"V",
+			"V",
+			"P"
+		],
+		formAway: [
+			"V",
+			"P",
+			"V",
+			"P",
+			"V"
+		],
+		h2hHomeWins: 3,
+		h2hDraws: 0,
+		h2hAwayWins: 2,
+		h2hSummary: "3V - 2P pro Panathinaikos",
+		calibrationOffset: 1.8,
+		reasoning: "Panathinaikos doma v Aténách vyhrál čtyři z posledních pěti utkání Euroligy při průměru 89 bodů na zápas a Betano nabízí nejvyšší kurz na trhu."
 	}
 ].map((m) => {
 	const model = evaluateMatchModel({
@@ -12684,9 +12791,15 @@ function useLocalStorage(key, initialValue) {
 	return [storedValue, setValue];
 }
 // src/services/oddsApiService.ts
-function mapSportKey(sportKey, sportTitle) {
+function mapSportGroupOrKey(group, sportKey, sportTitle) {
+	if (group === "Soccer") return "Fotbal";
+	if (group === "Ice Hockey") return "Hokej";
+	if (group === "Tennis") return "Tenis";
+	if (group === "Mixed Martial Arts") return "MMA";
+	if (group === "Basketball") return "Basketbal";
 	const s = `${sportKey} ${sportTitle}`.toLowerCase();
-	if (s.includes("hockey") || s.includes("nhl") || s.includes("khl") || s.includes("extraliga")) return "Hokej";
+	if (s.includes("basketball") || s.includes("nba") || s.includes("euroleague") || s.includes("ncaab")) return "Basketbal";
+	if (s.includes("hockey") || s.includes("nhl") || s.includes("khl") || s.includes("extraliga") || s.includes("liiga") || s.includes("shl")) return "Hokej";
 	if (s.includes("tennis") || s.includes("atp") || s.includes("wta")) return "Tenis";
 	if (s.includes("mma") || s.includes("ufc") || s.includes("boxing")) return "MMA";
 	return "Fotbal";
@@ -12695,9 +12808,77 @@ function mapLeagueName(sportTitle) {
 	const lower = sportTitle.toLowerCase();
 	if (lower.includes("epl") || lower.includes("premier league")) return "Premier League";
 	if (lower.includes("champions league")) return "Liga mistrů";
+	if (lower.includes("europa league")) return "Evropská liga";
 	if (lower.includes("nhl")) return "NHL";
+	if (lower.includes("nba")) return "NBA";
+	if (lower.includes("euroleague")) return "Euroliga";
 	if (lower.includes("ufc") || lower.includes("mma")) return "UFC / MMA";
 	return sportTitle;
+}
+function scoreSoccerLeague(s) {
+	const text = `${s.key} ${s.title} ${s.description}`.toLowerCase();
+	if (text.includes("world_cup") || text.includes("nations_league") || text.includes("euro") || text.includes("qualif") || text.includes("friendly") || text.includes("conmebol") || text.includes("concacaf") || text.includes("afcon") || text.includes("copa_america")) return 100;
+	if (text.includes("uefa_champs") || text.includes("uefa_europa") || text.includes("soccer_epl") || text.includes("spain_la_liga") || text.includes("germany_bundesliga") || text.includes("italy_serie_a") || text.includes("france_ligue_one") || text.includes("czech")) return 90;
+	if (text.includes("efl_champ") || text.includes("bundesliga2") || text.includes("segunda") || text.includes("serie_b") || text.includes("ligue_two") || text.includes("eredivisie") || text.includes("primeira") || text.includes("poland") || text.includes("austria") || text.includes("switzerland") || text.includes("spl")) return 70;
+	return 40;
+}
+function scoreHockeyLeague(s) {
+	const text = `${s.key} ${s.title}`.toLowerCase();
+	if (text.includes("nhl") || text.includes("czech") || text.includes("extraliga")) return 100;
+	if (text.includes("liiga") || text.includes("shl") || text.includes("sweden") || text.includes("finland")) return 85;
+	if (text.includes("ahl") || text.includes("mestis") || text.includes("allsvenskan") || text.includes("khl")) return 70;
+	return 45;
+}
+function scoreBasketballLeague(s) {
+	const text = `${s.key} ${s.title}`.toLowerCase();
+	if (text.includes("basketball_nba") || s.title.toUpperCase() === "NBA") return 100;
+	if (text.includes("euroleague")) return 95;
+	if (text.includes("eurocup")) return 75;
+	if (text.includes("acb") || text.includes("ncaab") || text.includes("wnba") || text.includes("nbl")) return 60;
+	return 40;
+}
+function selectActiveCompetitions(allSports) {
+	const activeMatchSports = allSports.filter((s) => s.active && !s.has_outrights);
+	const soccer = activeMatchSports.filter((s) => s.group === "Soccer").sort((a, b) => scoreSoccerLeague(b) - scoreSoccerLeague(a)).slice(0, 5);
+	const hockey = activeMatchSports.filter((s) => s.group === "Ice Hockey").sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a));
+	const allTennis = activeMatchSports.filter((s) => s.group === "Tennis");
+	const atpWtaTennis = allTennis.filter((s) => {
+		const text = `${s.key} ${s.title}`.toLowerCase();
+		return text.includes("atp") || text.includes("wta");
+	});
+	const tennis = atpWtaTennis.length > 0 ? atpWtaTennis : allTennis;
+	const mma = activeMatchSports.filter((s) => s.group === "Mixed Martial Arts");
+	const basketball = activeMatchSports.filter((s) => s.group === "Basketball").sort((a, b) => scoreBasketballLeague(b) - scoreBasketballLeague(a)).slice(0, 4);
+	const selected = [
+		...soccer.map((sport) => ({
+			sport,
+			category: "Fotbal"
+		})),
+		...hockey.map((sport) => ({
+			sport,
+			category: "Hokej"
+		})),
+		...tennis.map((sport) => ({
+			sport,
+			category: "Tenis"
+		})),
+		...mma.map((sport) => ({
+			sport,
+			category: "MMA"
+		})),
+		...basketball.map((sport) => ({
+			sport,
+			category: "Basketbal"
+		}))
+	];
+	const categoryByKey = /* @__PURE__ */ new Map();
+	selected.forEach(({ sport, category }) => {
+		categoryByKey.set(sport.key, category);
+	});
+	return {
+		selected,
+		categoryByKey
+	};
 }
 function formatCzechKickoff(iso) {
 	const date = new Date(iso);
@@ -12848,13 +13029,18 @@ async function fetchApiSportsTeamForm(teamName, sport, apiKey) {
 async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 	const key = theOddsApiKey.trim();
 	if (!key) throw new Error("Chybí API klíč pro The Odds API.");
-	const endpoints = [
-		`https://api.the-odds-api.com/v4/sports/upcoming/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`,
-		`https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`,
-		`https://api.the-odds-api.com/v4/sports/icehockey_nhl/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`
-	];
+	const sportsRes = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${encodeURIComponent(key)}`);
+	if (!sportsRes.ok) {
+		const detail = await extractHttpErrorDetail(sportsRes);
+		throw new Error(`The Odds API HTTP ${sportsRes.status}${sportsRes.statusText ? ` ${sportsRes.statusText}` : ""}: ${detail}`);
+	}
+	let remainingQuota = sportsRes.headers.get("x-requests-remaining");
+	const allSports = await sportsRes.json();
+	if (!Array.isArray(allSports)) throw new Error("The Odds API vrátilo neplatný seznam aktivních sportů.");
+	const { selected: activeCompetitions, categoryByKey } = selectActiveCompetitions(allSports);
+	if (activeCompetitions.length === 0) throw new Error("V The Odds API momentálně nejsou aktivní žádné soutěže pro Fotbal, Hokej, Tenis, MMA ani Basketbal.");
+	const endpoints = activeCompetitions.map(({ sport }) => `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`);
 	const responses = await Promise.allSettled(endpoints.map((url) => fetch(url)));
-	let remainingQuota = null;
 	const eventMap = /* @__PURE__ */ new Map();
 	const httpErrors = [];
 	for (const res of responses) {
@@ -12875,16 +13061,29 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 			if (ev.bookmakers && ev.bookmakers.length > 0) eventMap.set(ev.id, ev);
 		});
 	}
-	const events = Array.from(eventMap.values()).slice(0, 18);
+	const eventsBySport = /* @__PURE__ */ new Map();
+	for (const ev of eventMap.values()) {
+		const cat = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey("", ev.sport_key, ev.sport_title);
+		const list = eventsBySport.get(cat) ?? [];
+		list.push(ev);
+		eventsBySport.set(cat, list);
+	}
+	const events = [];
+	for (const list of eventsBySport.values()) {
+		list.sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
+		events.push(...list.slice(0, 8));
+	}
+	events.sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
 	if (events.length === 0) {
 		if (httpErrors.length > 0) throw new Error(httpErrors[0]);
-		throw new Error("The Odds API vrátilo HTTP 200, ale žádné nadcházející zápasy s aktivními kurzy.");
+		throw new Error("The Odds API vrátilo aktivní soutěže, ale momentálně žádné zápasy s vypsanými kurzy.");
 	}
 	const analyzed = [];
 	let apiSportsWarning = null;
+	let apiSportsLookups = 0;
 	for (let i = 0; i < events.length; i++) {
 		const ev = events[i];
-		const sport = mapSportKey(ev.sport_key, ev.sport_title);
+		const sport = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey("", ev.sport_key, ev.sport_title);
 		const league = mapLeagueName(ev.sport_title);
 		const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
 		const homePrices = [];
@@ -12922,7 +13121,8 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 		const marketAvg = Number(avgOdds.toFixed(2));
 		let formHome = null;
 		let formAway = null;
-		if (apiSportsKey.trim() && i < 6) {
+		if (apiSportsKey.trim() && (sport === "Fotbal" || sport === "Hokej") && apiSportsLookups < 6) {
+			apiSportsLookups += 1;
 			const [resHome, resAway] = await Promise.all([fetchApiSportsTeamForm(ev.home_team, sport, apiSportsKey), fetchApiSportsTeamForm(ev.away_team, sport, apiSportsKey)]);
 			formHome = resHome.form;
 			formAway = resAway.form;
@@ -13095,6 +13295,64 @@ var BookmarkCheck = createLucideIcon("bookmark-check", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var Calculator = createLucideIcon("calculator", [
+	["rect", {
+		width: "16",
+		height: "20",
+		x: "4",
+		y: "2",
+		rx: "2",
+		key: "1nb95v"
+	}],
+	["line", {
+		x1: "8",
+		x2: "16",
+		y1: "6",
+		y2: "6",
+		key: "x4nwl0"
+	}],
+	["line", {
+		x1: "16",
+		x2: "16",
+		y1: "14",
+		y2: "18",
+		key: "wjye3r"
+	}],
+	["path", {
+		d: "M16 10h.01",
+		key: "1m94wz"
+	}],
+	["path", {
+		d: "M12 10h.01",
+		key: "1nrarc"
+	}],
+	["path", {
+		d: "M8 10h.01",
+		key: "19clt8"
+	}],
+	["path", {
+		d: "M12 14h.01",
+		key: "1etili"
+	}],
+	["path", {
+		d: "M8 14h.01",
+		key: "6423bh"
+	}],
+	["path", {
+		d: "M12 18h.01",
+		key: "mhygvu"
+	}],
+	["path", {
+		d: "M8 18h.01",
+		key: "lrp35t"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var ChartColumn = createLucideIcon("chart-column", [
 	["path", {
 		d: "M3 3v16a2 2 0 0 0 2 2h16",
@@ -13138,6 +13396,28 @@ var CircleCheck = createLucideIcon("circle-check", [["circle", {
 	d: "m9 12 2 2 4-4",
 	key: "dzmm74"
 }]]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var CirclePlus = createLucideIcon("circle-plus", [
+	["circle", {
+		cx: "12",
+		cy: "12",
+		r: "10",
+		key: "1mglay"
+	}],
+	["path", {
+		d: "M8 12h8",
+		key: "1wcyev"
+	}],
+	["path", {
+		d: "M12 8v8",
+		key: "napkw2"
+	}]
+]);
 /**
 * @license lucide-react v0.546.0 - ISC
 *
@@ -13875,7 +14155,11 @@ var SPORT_FILTERS = [
 	"Fotbal",
 	"Hokej",
 	"Tenis",
-	"MMA"
+	"MMA",
+	"Basketbal",
+	"Ping-pong",
+	"Šipky",
+	"Ostatní"
 ];
 var TIME_WINDOWS = [
 	"Dnes",
@@ -13899,7 +14183,7 @@ function FormSequence({ label, form }) {
 		})]
 	});
 }
-var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano, isDemoMode, isLoadingLive, liveError, onRefreshLive, onOpenSettings }) => {
+var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano, isDemoMode, isLoadingLive, liveError, onRefreshLive, onOpenSettings, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const [sportFilter, setSportFilter] = (0, import_react.useState)("Vše");
 	const [timeWindow, setTimeWindow] = (0, import_react.useState)("Dnes");
 	const [onlyValueBets, setOnlyValueBets] = (0, import_react.useState)(false);
@@ -13960,18 +14244,27 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 					})]
 				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "flex flex-wrap items-center gap-3",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(PWAInstallButton, { variant: "compact" }), !isDemoMode ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-						type: "button",
-						onClick: onRefreshLive,
-						disabled: isLoadingLive,
-						className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `h-4 w-4 text-emerald-400 ${isLoadingLive ? "animate-spin" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingLive ? "Načítám kurzy..." : "Obnovit kurzy" })]
-					}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-						type: "button",
-						onClick: onOpenSettings,
-						className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700/90 bg-slate-900/90 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100 whitespace-nowrap shrink-0",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Připojit API klíče" })]
-					})]
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: onOpenCustomMatchModal,
+							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Vlastní zápas (Ping-pong / ostatní)" })]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)(PWAInstallButton, { variant: "compact" }),
+						!isDemoMode ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: onRefreshLive,
+							disabled: isLoadingLive,
+							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `h-4 w-4 text-emerald-400 ${isLoadingLive ? "animate-spin" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingLive ? "Načítám kurzy..." : "Obnovit kurzy" })]
+						}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: onOpenSettings,
+							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700/90 bg-slate-900/90 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100 whitespace-nowrap shrink-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Připojit API klíče" })]
+						})
+					]
 				})]
 			}),
 			liveError && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -14147,7 +14440,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "flex flex-wrap items-center justify-between gap-2 text-xs",
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-center gap-2 text-slate-400",
+									className: "flex flex-wrap items-center gap-2 text-slate-400",
 									children: [
 										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "font-medium text-slate-300",
@@ -14165,11 +14458,28 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "font-mono tabular-nums",
 											children: match.kickoffTime
-										})
+										}),
+										match.isCustom && typeof match.bookmakerMarginPct === "number" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											"aria-hidden": "true",
+											children: "·"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+											className: "font-mono tabular-nums text-sky-300",
+											children: ["Marže ", formatPercent(match.bookmakerMarginPct)]
+										})] })
 									]
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: `font-mono text-xs font-bold tabular-nums ${isPositiveValue ? "text-emerald-400" : "text-slate-400"}`,
-									children: [isPositiveValue ? "Value Bet " : "Bez výhody ", formatPercent(match.valueScore, true)]
+									className: "flex items-center gap-2.5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: `font-mono text-xs font-bold tabular-nums ${isPositiveValue ? "text-emerald-400" : "text-slate-400"}`,
+										children: [isPositiveValue ? "Value Bet " : match.isCustom && match.valueScore === 0 ? "Vlastní · Value " : "Bez výhody ", formatPercent(match.valueScore, true)]
+									}), match.isCustom && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => onDeleteCustomMatch(match.id),
+										title: "Smazat vlastní zápas",
+										"aria-label": `Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`,
+										className: "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" })
+									})]
 								})]
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
@@ -14322,7 +14632,11 @@ var ALL_SPORTS = [
 	"Fotbal",
 	"Hokej",
 	"Tenis",
-	"MMA"
+	"MMA",
+	"Basketbal",
+	"Ping-pong",
+	"Šipky",
+	"Ostatní"
 ];
 var RISK_LEVELS = [
 	"Konzervativní",
@@ -14353,7 +14667,7 @@ var RISK_BADGE_STYLES = {
 		dot: "bg-rose-400"
 	}
 };
-var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano }) => {
+var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const recommendedMinProb = (0, import_react.useMemo)(() => {
 		if (matches.length === 0) return 55;
 		const sorted = [...matches].sort((a, b) => b.aiProbability - a.aiProbability);
@@ -14366,12 +14680,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
 	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
 	const [riskLevel, setRiskLevel] = (0, import_react.useState)("Vyvážený");
-	const [selectedSports, setSelectedSports] = (0, import_react.useState)([
-		"Fotbal",
-		"Hokej",
-		"Tenis",
-		"MMA"
-	]);
+	const [selectedSports, setSelectedSports] = (0, import_react.useState)(ALL_SPORTS);
 	const [variationIndex, setVariationIndex] = (0, import_react.useState)(0);
 	const [generated, setGenerated] = (0, import_react.useState)(null);
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
@@ -14445,15 +14754,24 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
 	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
 	const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
+	const customMatches = (0, import_react.useMemo)(() => matches.filter((m) => m.isCustom), [matches]);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "space-y-6",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-			className: "text-xs text-slate-400",
-			children: "Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)"
-		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
-			className: "mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl",
-			children: "Generátor optimálního tiketu"
-		})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+				className: "text-xs text-slate-400",
+				children: "Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)"
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+				className: "mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl",
+				children: "Generátor optimálního tiketu"
+			})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+				type: "button",
+				onClick: onOpenCustomMatchModal,
+				className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0 self-start sm:self-auto",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Vlastní zápas (Ping-pong / ostatní)" })]
+			})]
+		}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 			className: "grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start",
 			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
 				className: "space-y-5 rounded-2xl border border-slate-800/90 bg-[#111827] p-5 lg:col-span-5",
@@ -14663,6 +14981,48 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 						onClick: () => handleGenerate(0),
 						className: "inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400",
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Layers, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Vygenerovat tiket" })]
+					}),
+					customMatches.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "border-t border-slate-800/80 pt-4 space-y-2",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+							className: "block text-xs font-semibold text-slate-300",
+							children: [
+								"Uložené vlastní zápasy (",
+								customMatches.length,
+								")"
+							]
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+							className: "space-y-1.5",
+							children: customMatches.map((cm) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-[#0B101B] px-3 py-2 text-xs",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "min-w-0",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "truncate font-medium text-slate-200",
+										children: [
+											cm.homeTeam,
+											" vs. ",
+											cm.awayTeam
+										]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "font-mono text-[11px] tabular-nums text-slate-400",
+										children: [
+											cm.sport,
+											" · Kurz ",
+											formatOdds(cm.odds.betano),
+											" · ",
+											formatPercent(cm.aiProbability)
+										]
+									})]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									onClick: () => onDeleteCustomMatch(cm.id),
+									"aria-label": `Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`,
+									className: "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
+									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" })
+								})]
+							}, cm.id))
+						})]
 					})
 				]
 			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", {
@@ -14695,12 +15055,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 								]
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 								type: "button",
-								onClick: () => setSelectedSports([
-									"Fotbal",
-									"Hokej",
-									"Tenis",
-									"MMA"
-								]),
+								onClick: () => setSelectedSports(ALL_SPORTS),
 								className: "inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
 								children: "Vybrat všechny sporty"
 							})]
@@ -15953,6 +16308,433 @@ var OfflineIndicator = () => {
 		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(WifiOff, { className: "h-4 w-4 shrink-0 text-amber-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Offline režim — zobrazují se uložená data v mezipaměti." })]
 	});
 };
+// src/components/CustomMatchModal.tsx
+var SPORT_OPTIONS = [
+	{
+		value: "Ping-pong",
+		label: "Stolní tenis / Ping-pong",
+		defaultLeague: "Stolní tenis (Vlastní)"
+	},
+	{
+		value: "Tenis",
+		label: "Tenis",
+		defaultLeague: "Tenis (Vlastní)"
+	},
+	{
+		value: "Fotbal",
+		label: "Fotbal",
+		defaultLeague: "Fotbal (Vlastní)"
+	},
+	{
+		value: "Hokej",
+		label: "Hokej",
+		defaultLeague: "Hokej (Vlastní)"
+	},
+	{
+		value: "MMA",
+		label: "MMA",
+		defaultLeague: "MMA (Vlastní)"
+	},
+	{
+		value: "Basketbal",
+		label: "Basketbal",
+		defaultLeague: "Basketbal (Vlastní)"
+	},
+	{
+		value: "Šipky",
+		label: "Šipky",
+		defaultLeague: "Šipky (Vlastní)"
+	},
+	{
+		value: "Ostatní",
+		label: "Ostatní",
+		defaultLeague: "Vlastní turnaj"
+	}
+];
+function parseDecimal(raw) {
+	const normalized = raw.trim().replace(",", ".");
+	if (!normalized) return null;
+	const num = Number(normalized);
+	return Number.isFinite(num) ? num : null;
+}
+var CustomMatchModal = ({ isOpen, onClose, onAddMatch }) => {
+	const [sport, setSport] = (0, import_react.useState)("Ping-pong");
+	const [leagueInput, setLeagueInput] = (0, import_react.useState)("");
+	const [homeTeam, setHomeTeam] = (0, import_react.useState)("");
+	const [awayTeam, setAwayTeam] = (0, import_react.useState)("");
+	const [oddsHomeRaw, setOddsHomeRaw] = (0, import_react.useState)("");
+	const [oddsDrawRaw, setOddsDrawRaw] = (0, import_react.useState)("");
+	const [oddsAwayRaw, setOddsAwayRaw] = (0, import_react.useState)("");
+	const [comparisonOddsRaw, setComparisonOddsRaw] = (0, import_react.useState)("");
+	const [error, setError] = (0, import_react.useState)(null);
+	const parsedHome = parseDecimal(oddsHomeRaw);
+	const parsedDraw = parseDecimal(oddsDrawRaw);
+	const parsedAway = parseDecimal(oddsAwayRaw);
+	const parsedComparison = parseDecimal(comparisonOddsRaw);
+	const liveMetrics = (0, import_react.useMemo)(() => {
+		if (!parsedHome || !parsedAway) return null;
+		return calculateCustomMatchMetrics({
+			oddsHome: parsedHome,
+			oddsDraw: parsedDraw,
+			oddsAway: parsedAway,
+			comparisonFavoriteOdds: parsedComparison
+		});
+	}, [
+		parsedHome,
+		parsedDraw,
+		parsedAway,
+		parsedComparison
+	]);
+	if (!isOpen) return null;
+	const isTwoWaySport = sport === "Ping-pong" || sport === "Tenis" || sport === "Šipky" || sport === "MMA";
+	const handleSubmit = (e) => {
+		e.preventDefault();
+		setError(null);
+		const cleanHome = homeTeam.trim();
+		const cleanAway = awayTeam.trim();
+		if (!cleanHome || !cleanAway) {
+			setError("Zadejte prosím oba účastníky (Hráč / Tým 1 i Hráč / Tým 2).");
+			return;
+		}
+		if (!parsedHome || parsedHome <= 1.01 || !parsedAway || parsedAway <= 1.01) {
+			setError("Zadejte platné kurzy vyšší než 1.01 pro oba hráče / týmy.");
+			return;
+		}
+		if (oddsDrawRaw.trim() && (!parsedDraw || parsedDraw <= 1.01)) {
+			setError("Volitelný kurz na remízu musí být vyšší než 1.01 nebo zůstat prázdný.");
+			return;
+		}
+		if (comparisonOddsRaw.trim() && (!parsedComparison || parsedComparison <= 1.01)) {
+			setError("Srovnávací kurz z jiné sázkovky musí být vyšší než 1.01 nebo zůstat prázdný.");
+			return;
+		}
+		const metrics = calculateCustomMatchMetrics({
+			oddsHome: parsedHome,
+			oddsDraw: parsedDraw,
+			oddsAway: parsedAway,
+			comparisonFavoriteOdds: parsedComparison
+		});
+		if (!metrics) {
+			setError("Nepodařilo se vypočítat pravděpodobnost ze zadaných kurzů.");
+			return;
+		}
+		const favName = metrics.favoriteSide === "home" ? cleanHome : cleanAway;
+		const sportMeta = SPORT_OPTIONS.find((o) => o.value === sport);
+		const league = leagueInput.trim() || sportMeta?.defaultLeague || sport;
+		const hasComparison = Boolean(parsedComparison && parsedComparison > 1.01);
+		onAddMatch({
+			id: `custom-${Date.now()}`,
+			sport,
+			league,
+			timeWindow: "Dnes",
+			kickoffTime: "Vlastní · Dnes",
+			kickoffIso: (/* @__PURE__ */ new Date()).toISOString(),
+			homeTeam: cleanHome,
+			awayTeam: cleanAway,
+			recommendedPick: `Výhra ${favName} (${metrics.favoriteSide === "home" ? "1" : "2"})`,
+			marketLabel: "Vítěz zápasu",
+			odds: {
+				betano: metrics.favoriteOdds,
+				tipsport: metrics.marketAvgOdds,
+				marketAvg: metrics.marketAvgOdds
+			},
+			formHome: [
+				"V",
+				"V",
+				"P",
+				"V",
+				"V"
+			],
+			formAway: [
+				"P",
+				"V",
+				"P",
+				"V",
+				"P"
+			],
+			h2hHomeWins: metrics.favoriteSide === "home" ? 3 : 2,
+			h2hDraws: parsedDraw ? 1 : 0,
+			h2hAwayWins: metrics.favoriteSide === "away" ? 3 : 2,
+			h2hSummary: `Férové šance ${formatPercent(metrics.fairProbHome)} vs. ${formatPercent(metrics.fairProbAway)}`,
+			aiProbability: metrics.favoriteFairProb,
+			impliedProbability: metrics.favoriteImpliedProb,
+			valueScore: metrics.valueScore,
+			reasoning: `Vlastní zápas · marže sázkovky ${formatPercent(metrics.bookmakerMarginPct)}. Očištěná férová šance: ${cleanHome} ${formatPercent(metrics.fairProbHome)}${metrics.fairProbDraw !== null ? ` · Remíza ${formatPercent(metrics.fairProbDraw)}` : ""} · ${cleanAway} ${formatPercent(metrics.fairProbAway)}. ${hasComparison ? `Srovnávací kurz ${formatOdds(metrics.marketAvgOdds)} dává Value ${formatPercent(metrics.valueScore, true)}.` : "Bez srovnávacího kurzu nastaveno neutrální Value 0 %."}`,
+			isLiveApi: false,
+			isCustom: true,
+			bookmakerMarginPct: metrics.bookmakerMarginPct
+		});
+		setLeagueInput("");
+		setHomeTeam("");
+		setAwayTeam("");
+		setOddsHomeRaw("");
+		setOddsDrawRaw("");
+		setOddsAwayRaw("");
+		setComparisonOddsRaw("");
+		setError(null);
+		onClose();
+	};
+	const marginQuality = !liveMetrics ? null : liveMetrics.bookmakerMarginPct <= 5.5 ? {
+		label: "Nízká marže (výhodný trh)",
+		cls: "text-emerald-400"
+	} : liveMetrics.bookmakerMarginPct <= 8.5 ? {
+		label: "Běžná marže sázkovky",
+		cls: "text-amber-300"
+	} : {
+		label: "Vysoká marže (ošizený kurz)",
+		cls: "text-rose-400"
+	};
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4",
+		role: "dialog",
+		"aria-modal": "true",
+		"aria-labelledby": "custom-match-modal-title",
+		onClick: (e) => {
+			if (e.target === e.currentTarget) onClose();
+		},
+		children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-t-2xl border border-slate-800 bg-[#111827] shadow-2xl sm:rounded-2xl",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-[#111827] px-5 py-4",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-center gap-2.5",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-5 w-5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
+						id: "custom-match-modal-title",
+						className: "font-display text-lg font-bold text-slate-50",
+						children: "Přidat vlastní zápas"
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "text-xs text-slate-400",
+						children: "Stolní tenis / ping-pong, šipky nebo lokální turnaje mimo API"
+					})] })]
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+					type: "button",
+					onClick: onClose,
+					"aria-label": "Zavřít formulář",
+					className: "inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:text-slate-100",
+					children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "h-4 w-4" })
+				})]
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
+				onSubmit: handleSubmit,
+				className: "space-y-4 p-5",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+							htmlFor: "custom-sport",
+							className: "block text-xs font-semibold text-slate-300",
+							children: "Sport"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("select", {
+							id: "custom-sport",
+							value: sport,
+							onChange: (e) => {
+								const next = e.target.value;
+								setSport(next);
+								if (next === "Ping-pong" || next === "Tenis" || next === "Šipky" || next === "MMA") setOddsDrawRaw("");
+							},
+							className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 focus:border-emerald-500/60 focus:outline-none",
+							children: SPORT_OPTIONS.map((opt) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", {
+								value: opt.value,
+								children: opt.label
+							}, opt.value))
+						})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+							htmlFor: "custom-league",
+							className: "block text-xs font-semibold text-slate-300",
+							children: "Turnaj / liga (volitelné)"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+							id: "custom-league",
+							type: "text",
+							value: leagueInput,
+							onChange: (e) => setLeagueInput(e.target.value),
+							placeholder: "např. TT Star Series / PDC",
+							className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+						})] })]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+							htmlFor: "custom-home",
+							className: "block text-xs font-semibold text-slate-300",
+							children: "Hráč / Tým 1 (Domácí)"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+							id: "custom-home",
+							type: "text",
+							value: homeTeam,
+							onChange: (e) => setHomeTeam(e.target.value),
+							placeholder: "např. Lubomír Jančařík",
+							required: true,
+							className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+						})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+							htmlFor: "custom-away",
+							className: "block text-xs font-semibold text-slate-300",
+							children: "Hráč / Tým 2 (Hosté)"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+							id: "custom-away",
+							type: "text",
+							value: awayTeam,
+							onChange: (e) => setAwayTeam(e.target.value),
+							placeholder: "např. Tomáš Tregler",
+							required: true,
+							className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+						})] })]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "grid grid-cols-1 gap-3 sm:grid-cols-3",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+								htmlFor: "custom-odds-home",
+								className: "block text-xs font-semibold text-slate-300",
+								children: "Kurz Hráč/Tým 1"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+								id: "custom-odds-home",
+								type: "text",
+								inputMode: "decimal",
+								value: oddsHomeRaw,
+								onChange: (e) => setOddsHomeRaw(e.target.value),
+								placeholder: "např. 1.65",
+								required: true,
+								className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+							})] }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+								htmlFor: "custom-odds-draw",
+								className: "block text-xs font-semibold text-slate-300",
+								children: "Kurz Remíza (volitelné)"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+								id: "custom-odds-draw",
+								type: "text",
+								inputMode: "decimal",
+								value: oddsDrawRaw,
+								onChange: (e) => setOddsDrawRaw(e.target.value),
+								placeholder: isTwoWaySport ? "Nechte prázdné" : "např. 3.40",
+								className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+							})] }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+								htmlFor: "custom-odds-away",
+								className: "block text-xs font-semibold text-slate-300",
+								children: "Kurz Hráč/Tým 2"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+								id: "custom-odds-away",
+								type: "text",
+								inputMode: "decimal",
+								value: oddsAwayRaw,
+								onChange: (e) => setOddsAwayRaw(e.target.value),
+								placeholder: "např. 2.15",
+								required: true,
+								className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+							})] })
+						]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+						htmlFor: "custom-comparison-odds",
+						className: "block text-xs font-semibold text-slate-300",
+						children: "Srovnávací / průměrný kurz na favorita z jiné sázkovky (volitelné)"
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+						id: "custom-comparison-odds",
+						type: "text",
+						inputMode: "decimal",
+						value: comparisonOddsRaw,
+						onChange: (e) => setComparisonOddsRaw(e.target.value),
+						placeholder: "např. 1.55 (pokud nevyplníte, Value bude 0 %)",
+						className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+					})] }),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "rounded-xl border border-slate-800 bg-[#090D16] p-4",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex items-center justify-between gap-2",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+								className: "inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Calculator, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Automatický výpočet bez marže" })]
+							}), liveMetrics && marginQuality && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+								className: `font-mono text-xs font-semibold tabular-nums ${marginQuality.cls}`,
+								children: ["Marže: ", formatPercent(liveMetrics.bookmakerMarginPct)]
+							})]
+						}), !liveMetrics ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "mt-2 text-xs text-slate-400",
+							children: "Zadejte kurzy pro oba hráče / týmy a kalkulačka ihned očistí kurzy od marže sázkovky."
+						}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "mt-3 space-y-2.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "grid grid-cols-2 gap-2.5 sm:grid-cols-3",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "block truncate text-[11px] text-slate-400",
+											children: homeTeam.trim() || "Hráč / Tým 1"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100",
+											children: formatPercent(liveMetrics.fairProbHome)
+										})]
+									}),
+									liveMetrics.fairProbDraw !== null && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "block text-[11px] text-slate-400",
+											children: "Remíza"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100",
+											children: formatPercent(liveMetrics.fairProbDraw)
+										})]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "block truncate text-[11px] text-slate-400",
+											children: awayTeam.trim() || "Hráč / Tým 2"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100",
+											children: formatPercent(liveMetrics.fairProbAway)
+										})]
+									})
+								]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2 text-xs",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: marginQuality?.cls,
+									children: marginQuality?.label
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: "font-mono tabular-nums text-slate-300",
+									children: [
+										"Favorit:",
+										" ",
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", {
+											className: "text-emerald-300",
+											children: liveMetrics.favoriteSide === "home" ? homeTeam.trim() || "Hráč 1" : awayTeam.trim() || "Hráč 2"
+										}),
+										" ",
+										"· Value",
+										" ",
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", {
+											className: liveMetrics.valueScore > 0 ? "text-emerald-400" : liveMetrics.valueScore < 0 ? "text-rose-400" : "text-slate-200",
+											children: formatPercent(liveMetrics.valueScore, true)
+										})
+									]
+								})]
+							})]
+						})]
+					}),
+					error && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+						role: "alert",
+						className: "rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-300",
+						children: error
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex flex-col-reverse gap-2.5 pt-2 sm:flex-row sm:justify-end",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: onClose,
+							className: "inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800",
+							children: "Zrušit"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "submit",
+							className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Uložit a přidat do analýzy" })]
+						})]
+					})
+				]
+			})]
+		})
+	});
+};
 // src/App.tsx
 var DEFAULT_SETTINGS = {
 	theOddsApiKey: "",
@@ -15965,11 +16747,13 @@ function App() {
 	const [settings, setSettings] = useLocalStorage("betedge_settings_v1", DEFAULT_SETTINGS);
 	const [tickets, setTickets] = useLocalStorage("betedge_tickets_v1", INITIAL_DEMO_TICKETS);
 	const [slipMatchIds, setSlipMatchIds] = useLocalStorage("betedge_slip_v1", []);
+	const [customMatches, setCustomMatches] = useLocalStorage("betedge_custom_matches_v1", []);
 	const [liveMatches, setLiveMatches] = (0, import_react.useState)(null);
 	const [isLoadingLive, setIsLoadingLive] = (0, import_react.useState)(false);
 	const [liveError, setLiveError] = (0, import_react.useState)(null);
 	const [liveStatusMessage, setLiveStatusMessage] = (0, import_react.useState)(null);
 	const [isSlipOpen, setIsSlipOpen] = (0, import_react.useState)(false);
+	const [isCustomModalOpen, setIsCustomModalOpen] = (0, import_react.useState)(false);
 	const [toastMessage, setToastMessage] = (0, import_react.useState)(null);
 	const lastAttemptedKeyRef = (0, import_react.useRef)(null);
 	const showToast = (0, import_react.useCallback)((msg) => {
@@ -16023,9 +16807,13 @@ function App() {
 		handleFetchLiveData
 	]);
 	const activeMatches = (0, import_react.useMemo)(() => {
-		if (settings.demoMode) return DEMO_MATCHES;
-		return liveMatches ?? [];
-	}, [settings.demoMode, liveMatches]);
+		const baseMatches = settings.demoMode ? DEMO_MATCHES : liveMatches ?? [];
+		return [...customMatches, ...baseMatches];
+	}, [
+		customMatches,
+		settings.demoMode,
+		liveMatches
+	]);
 	const selectedSlipMatches = (0, import_react.useMemo)(() => {
 		return activeMatches.filter((m) => slipMatchIds.includes(m.id));
 	}, [activeMatches, slipMatchIds]);
@@ -16067,6 +16855,15 @@ function App() {
 		setTickets([]);
 		showToast(`Demo tikety smazány. Počáteční kapitál je ${formatCZK(settings.initialBankroll)}.`);
 	};
+	const handleAddCustomMatch = (match) => {
+		setCustomMatches((prev) => [match, ...prev]);
+		showToast(`Vlastní zápas ${match.homeTeam} vs. ${match.awayTeam} byl přidán.`);
+	};
+	const handleDeleteCustomMatch = (matchId) => {
+		setCustomMatches((prev) => prev.filter((m) => m.id !== matchId));
+		setSlipMatchIds((prev) => prev.filter((id) => id !== matchId));
+		showToast("Vlastní zápas byl odstraněn.");
+	};
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "min-h-screen bg-[#090D16] text-slate-100 flex flex-col",
 		children: [
@@ -16088,13 +16885,17 @@ function App() {
 						isLoadingLive,
 						liveError,
 						onRefreshLive: () => handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey),
-						onOpenSettings: () => setActiveTab("settings")
+						onOpenSettings: () => setActiveTab("settings"),
+						onOpenCustomMatchModal: () => setIsCustomModalOpen(true),
+						onDeleteCustomMatch: handleDeleteCustomMatch
 					}),
 					activeTab === "generator" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TicketGenerator, {
 						matches: activeMatches,
 						currentBankroll,
 						onSaveTicket: handleSaveTicket,
-						onOpenBetano: handleOpenBetano
+						onOpenBetano: handleOpenBetano,
+						onOpenCustomMatchModal: () => setIsCustomModalOpen(true),
+						onDeleteCustomMatch: handleDeleteCustomMatch
 					}),
 					activeTab === "bankroll" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BankrollStats, {
 						tickets,
@@ -16137,6 +16938,11 @@ function App() {
 				onClearSlip: () => setSlipMatchIds([]),
 				onSaveTicket: handleSaveTicket,
 				onOpenBetano: handleOpenBetano
+			}),
+			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CustomMatchModal, {
+				isOpen: isCustomModalOpen,
+				onClose: () => setIsCustomModalOpen(false),
+				onAddMatch: handleAddCustomMatch
 			}),
 			toastMessage && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 				role: "status",

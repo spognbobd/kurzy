@@ -1,4 +1,12 @@
-export type SportCategory = 'Fotbal' | 'Hokej' | 'Tenis' | 'MMA';
+export type SportCategory =
+  | 'Fotbal'
+  | 'Hokej'
+  | 'Tenis'
+  | 'MMA'
+  | 'Basketbal'
+  | 'Ping-pong'
+  | 'Šipky'
+  | 'Ostatní';
 export type SportFilter = 'Vše' | SportCategory;
 export type TimeWindow = 'Dnes' | 'Zítra' | 'Víkend';
 export type RiskLevel = 'Konzervativní' | 'Vyvážený' | 'Odvážný';
@@ -36,6 +44,8 @@ export interface MatchAnalysis {
   valueScore: number; // percentage EV e.g. +8.4 or -2.1
   reasoning: string;
   isLiveApi?: boolean;
+  isCustom?: boolean;
+  bookmakerMarginPct?: number;
 }
 
 export interface TicketLeg {

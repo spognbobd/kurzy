@@ -4,9 +4,11 @@ import {
   Check,
   ExternalLink,
   Plus,
+  PlusCircle,
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Trash2,
   TrendingUp,
 } from 'lucide-react';
 import {
@@ -32,9 +34,21 @@ interface MatchFeedProps {
   liveError: string | null;
   onRefreshLive: () => void;
   onOpenSettings: () => void;
+  onOpenCustomMatchModal: () => void;
+  onDeleteCustomMatch: (matchId: string) => void;
 }
 
-const SPORT_FILTERS: SportFilter[] = ['Vše', 'Fotbal', 'Hokej', 'Tenis', 'MMA'];
+const SPORT_FILTERS: SportFilter[] = [
+  'Vše',
+  'Fotbal',
+  'Hokej',
+  'Tenis',
+  'MMA',
+  'Basketbal',
+  'Ping-pong',
+  'Šipky',
+  'Ostatní',
+];
 const TIME_WINDOWS: (TimeWindow | 'Vše')[] = ['Dnes', 'Zítra', 'Víkend', 'Vše'];
 
 function FormSequence({ label, form }: { label: string; form: FormResult[] }) {
@@ -71,6 +85,8 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   liveError,
   onRefreshLive,
   onOpenSettings,
+  onOpenCustomMatchModal,
+  onDeleteCustomMatch,
 }) => {
   const [sportFilter, setSportFilter] = useState<SportFilter>('Vše');
   const [timeWindow, setTimeWindow] = useState<TimeWindow | 'Vše'>('Dnes');
@@ -128,6 +144,14 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={onOpenCustomMatchModal}
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0"
+          >
+            <PlusCircle className="h-4 w-4 shrink-0" />
+            <span>+ Vlastní zápas (Ping-pong / ostatní)</span>
+          </button>
           <PWAInstallButton variant="compact" />
           {!isDemoMode ? (
             <button
@@ -363,21 +387,42 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                 <div>
                   {/* Clean Unboxed Metadata Row */}
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2 text-slate-400">
+                    <div className="flex flex-wrap items-center gap-2 text-slate-400">
                       <span className="font-medium text-slate-300">{match.sport}</span>
                       <span aria-hidden="true">·</span>
                       <span>{match.league}</span>
                       <span aria-hidden="true">·</span>
                       <span className="font-mono tabular-nums">{match.kickoffTime}</span>
+                      {match.isCustom && typeof match.bookmakerMarginPct === 'number' && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono tabular-nums text-sky-300">
+                            Marže {formatPercent(match.bookmakerMarginPct)}
+                          </span>
+                        </>
+                      )}
                     </div>
 
-                    <div
-                      className={`font-mono text-xs font-bold tabular-nums ${
-                        isPositiveValue ? 'text-emerald-400' : 'text-slate-400'
-                      }`}
-                    >
-                      {isPositiveValue ? 'Value Bet ' : 'Bez výhody '}
-                      {formatPercent(match.valueScore, true)}
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className={`font-mono text-xs font-bold tabular-nums ${
+                          isPositiveValue ? 'text-emerald-400' : 'text-slate-400'
+                        }`}
+                      >
+                        {isPositiveValue ? 'Value Bet ' : match.isCustom && match.valueScore === 0 ? 'Vlastní · Value ' : 'Bez výhody '}
+                        {formatPercent(match.valueScore, true)}
+                      </div>
+                      {match.isCustom && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCustomMatch(match.id)}
+                          title="Smazat vlastní zápas"
+                          aria-label={`Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
 

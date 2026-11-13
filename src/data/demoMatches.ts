@@ -434,6 +434,58 @@ const RAW_DEMO_MATCHES: RawDemoMatch[] = [
     reasoning:
       'Topuria je neporažený s pěti výhrami v řadě a v prvním vzájemném souboji dominoval v boxu. Kurz 1.48 na Betanu je výše než světový průměr 1.43.',
   },
+
+  // BASKETBAL - NBA, Euroliga
+  {
+    id: 'bk-nba-1',
+    sport: 'Basketbal',
+    league: 'NBA',
+    timeWindow: 'Dnes',
+    kickoffTime: 'Dnes 01:30',
+    kickoffIso: '2026-11-13T01:30:00Z',
+    homeTeam: 'Boston Celtics',
+    awayTeam: 'Milwaukee Bucks',
+    recommendedPick: 'Výhra Boston Celtics (1)',
+    marketLabel: 'Vítěz zápasu',
+    pickSide: 'home',
+    betano: 1.66,
+    tipsport: 1.61,
+    marketAvg: 1.59,
+    formHome: ['V', 'V', 'V', 'P', 'V'],
+    formAway: ['P', 'V', 'P', 'V', 'P'],
+    h2hHomeWins: 4,
+    h2hDraws: 0,
+    h2hAwayWins: 1,
+    h2hSummary: '4V - 1P pro Boston',
+    calibrationOffset: 1.6,
+    reasoning:
+      'Celtics v TD Garden drží nejlepší bilanci ofenzivního ratingu v NBA a ovládli 4 z posledních 5 vzájemných duelů. Betano kurz 1.66 leží nad průměrem trhu 1.59.',
+  },
+  {
+    id: 'bk-el-1',
+    sport: 'Basketbal',
+    league: 'Euroliga',
+    timeWindow: 'Zítra',
+    kickoffTime: 'Zítra 20:15',
+    kickoffIso: '2026-11-13T20:15:00Z',
+    homeTeam: 'Panathinaikos',
+    awayTeam: 'Fenerbahce',
+    recommendedPick: 'Výhra Panathinaikos (1)',
+    marketLabel: 'Vítěz zápasu',
+    pickSide: 'home',
+    betano: 1.84,
+    tipsport: 1.78,
+    marketAvg: 1.75,
+    formHome: ['V', 'V', 'V', 'V', 'P'],
+    formAway: ['V', 'P', 'V', 'P', 'V'],
+    h2hHomeWins: 3,
+    h2hDraws: 0,
+    h2hAwayWins: 2,
+    h2hSummary: '3V - 2P pro Panathinaikos',
+    calibrationOffset: 1.8,
+    reasoning:
+      'Panathinaikos doma v Aténách vyhrál čtyři z posledních pěti utkání Euroligy při průměru 89 bodů na zápas a Betano nabízí nejvyšší kurz na trhu.',
+  },
 ];
 
 export const DEMO_MATCHES: MatchAnalysis[] = RAW_DEMO_MATCHES.map((m) => {

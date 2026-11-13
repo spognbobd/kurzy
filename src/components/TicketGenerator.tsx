@@ -5,10 +5,12 @@ import {
   Check,
   ExternalLink,
   Layers,
+  PlusCircle,
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   TrendingUp,
 } from 'lucide-react';
 import {
@@ -34,9 +36,20 @@ interface TicketGeneratorProps {
   currentBankroll: number;
   onSaveTicket: (ticket: Ticket) => void;
   onOpenBetano: (homeTeam: string, awayTeam: string) => void;
+  onOpenCustomMatchModal: () => void;
+  onDeleteCustomMatch: (matchId: string) => void;
 }
 
-const ALL_SPORTS: SportCategory[] = ['Fotbal', 'Hokej', 'Tenis', 'MMA'];
+const ALL_SPORTS: SportCategory[] = [
+  'Fotbal',
+  'Hokej',
+  'Tenis',
+  'MMA',
+  'Basketbal',
+  'Ping-pong',
+  'Šipky',
+  'Ostatní',
+];
 const RISK_LEVELS: RiskLevel[] = ['Konzervativní', 'Vyvážený', 'Odvážný'];
 const BUDGET_PRESETS = [5, 50, 200, 1000, 5000];
 
@@ -63,6 +76,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   currentBankroll,
   onSaveTicket,
   onOpenBetano,
+  onOpenCustomMatchModal,
+  onDeleteCustomMatch,
 }) => {
   const recommendedMinProb = useMemo(() => {
     if (matches.length === 0) return 55;
@@ -84,7 +99,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [ticketStyle, setTicketStyle] = useState<TicketStyle>('safe');
   const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
   const [riskLevel, setRiskLevel] = useState<RiskLevel>('Vyvážený');
-  const [selectedSports, setSelectedSports] = useState<SportCategory[]>(['Fotbal', 'Hokej', 'Tenis', 'MMA']);
+  const [selectedSports, setSelectedSports] = useState<SportCategory[]>(ALL_SPORTS);
   const [variationIndex, setVariationIndex] = useState(0);
   const [generated, setGenerated] = useState<GeneratedTicketResult | null>(null);
   const [customStake, setCustomStake] = useState<number>(5);
@@ -169,16 +184,28 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
   const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
   const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
+  const customMatches = useMemo(() => matches.filter((m) => m.isCustom), [matches]);
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-xs text-slate-400">
-          Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)
-        </p>
-        <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
-          Generátor optimálního tiketu
-        </h1>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs text-slate-400">
+            Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)
+          </p>
+          <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
+            Generátor optimálního tiketu
+          </h1>
+        </div>
+
+        <button
+          type="button"
+          onClick={onOpenCustomMatchModal}
+          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0 self-start sm:self-auto"
+        >
+          <PlusCircle className="h-4 w-4 shrink-0" />
+          <span>+ Vlastní zápas (Ping-pong / ostatní)</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
@@ -414,6 +441,39 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             <Layers className="h-4 w-4 shrink-0" />
             <span>Vygenerovat tiket</span>
           </button>
+
+          {customMatches.length > 0 && (
+            <div className="border-t border-slate-800/80 pt-4 space-y-2">
+              <span className="block text-xs font-semibold text-slate-300">
+                Uložené vlastní zápasy ({customMatches.length})
+              </span>
+              <div className="space-y-1.5">
+                {customMatches.map((cm) => (
+                  <div
+                    key={cm.id}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-[#0B101B] px-3 py-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-slate-200">
+                        {cm.homeTeam} vs. {cm.awayTeam}
+                      </p>
+                      <p className="font-mono text-[11px] tabular-nums text-slate-400">
+                        {cm.sport} · Kurz {formatOdds(cm.odds.betano)} · {formatPercent(cm.aiProbability)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteCustomMatch(cm.id)}
+                      aria-label={`Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Right Generated Ticket Result */}
@@ -436,7 +496,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedSports(['Fotbal', 'Hokej', 'Tenis', 'MMA'])}
+                  onClick={() => setSelectedSports(ALL_SPORTS)}
                   className="inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                 >
                   Vybrat všechny sporty

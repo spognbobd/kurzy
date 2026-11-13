@@ -11,6 +11,7 @@ import { BankrollStats } from './components/BankrollStats';
 import { SettingsView } from './components/SettingsView';
 import { TicketSlipDrawer } from './components/TicketSlipDrawer';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { CustomMatchModal } from './components/CustomMatchModal';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theOddsApiKey: '',
@@ -24,6 +25,7 @@ export default function App() {
   const [settings, setSettings] = useLocalStorage<AppSettings>('betedge_settings_v1', DEFAULT_SETTINGS);
   const [tickets, setTickets] = useLocalStorage<Ticket[]>('betedge_tickets_v1', INITIAL_DEMO_TICKETS);
   const [slipMatchIds, setSlipMatchIds] = useLocalStorage<string[]>('betedge_slip_v1', []);
+  const [customMatches, setCustomMatches] = useLocalStorage<MatchAnalysis[]>('betedge_custom_matches_v1', []);
 
   const [liveMatches, setLiveMatches] = useState<MatchAnalysis[] | null>(null);
   const [isLoadingLive, setIsLoadingLive] = useState(false);
@@ -31,6 +33,7 @@ export default function App() {
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null);
 
   const [isSlipOpen, setIsSlipOpen] = useState(false);
+  const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const lastAttemptedKeyRef = useRef<string | null>(null);
 
@@ -94,11 +97,9 @@ export default function App() {
   }, [settings.demoMode, settings.theOddsApiKey, settings.apiSportsKey, handleFetchLiveData]);
 
   const activeMatches = useMemo(() => {
-    if (settings.demoMode) {
-      return DEMO_MATCHES;
-    }
-    return liveMatches ?? [];
-  }, [settings.demoMode, liveMatches]);
+    const baseMatches = settings.demoMode ? DEMO_MATCHES : liveMatches ?? [];
+    return [...customMatches, ...baseMatches];
+  }, [customMatches, settings.demoMode, liveMatches]);
 
   const selectedSlipMatches = useMemo(() => {
     return activeMatches.filter((m) => slipMatchIds.includes(m.id));
@@ -151,6 +152,17 @@ export default function App() {
     showToast(`Demo tikety smazány. Počáteční kapitál je ${formatCZK(settings.initialBankroll)}.`);
   };
 
+  const handleAddCustomMatch = (match: MatchAnalysis) => {
+    setCustomMatches((prev) => [match, ...prev]);
+    showToast(`Vlastní zápas ${match.homeTeam} vs. ${match.awayTeam} byl přidán.`);
+  };
+
+  const handleDeleteCustomMatch = (matchId: string) => {
+    setCustomMatches((prev) => prev.filter((m) => m.id !== matchId));
+    setSlipMatchIds((prev) => prev.filter((id) => id !== matchId));
+    showToast('Vlastní zápas byl odstraněn.');
+  };
+
   return (
     <div className="min-h-screen bg-[#090D16] text-slate-100 flex flex-col">
       <Navbar
@@ -172,6 +184,8 @@ export default function App() {
             liveError={liveError}
             onRefreshLive={() => handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey)}
             onOpenSettings={() => setActiveTab('settings')}
+            onOpenCustomMatchModal={() => setIsCustomModalOpen(true)}
+            onDeleteCustomMatch={handleDeleteCustomMatch}
           />
         )}
 
@@ -181,6 +195,8 @@ export default function App() {
             currentBankroll={currentBankroll}
             onSaveTicket={handleSaveTicket}
             onOpenBetano={handleOpenBetano}
+            onOpenCustomMatchModal={() => setIsCustomModalOpen(true)}
+            onDeleteCustomMatch={handleDeleteCustomMatch}
           />
         )}
 
@@ -230,6 +246,12 @@ export default function App() {
         onClearSlip={() => setSlipMatchIds([])}
         onSaveTicket={handleSaveTicket}
         onOpenBetano={handleOpenBetano}
+      />
+
+      <CustomMatchModal
+        isOpen={isCustomModalOpen}
+        onClose={() => setIsCustomModalOpen(false)}
+        onAddMatch={handleAddCustomMatch}
       />
 
       {toastMessage && (

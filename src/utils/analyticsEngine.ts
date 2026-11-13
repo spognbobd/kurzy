@@ -134,6 +134,79 @@ export function evaluateMatchModel(params: {
   };
 }
 
+export interface CustomMatchMetrics {
+  fairProbHome: number;
+  fairProbDraw: number | null;
+  fairProbAway: number;
+  bookmakerMarginPct: number;
+  favoriteSide: 'home' | 'away';
+  favoriteOdds: number;
+  favoriteFairProb: number;
+  favoriteImpliedProb: number;
+  valueScore: number;
+  marketAvgOdds: number;
+}
+
+/**
+ * Strips bookmaker margin from 2-way or 3-way odds and computes fair probabilities,
+ * margin %, and optional Value % against a comparison bookmaker's favorite odds.
+ */
+export function calculateCustomMatchMetrics(params: {
+  oddsHome: number;
+  oddsDraw?: number | null;
+  oddsAway: number;
+  comparisonFavoriteOdds?: number | null;
+}): CustomMatchMetrics | null {
+  const { oddsHome, oddsDraw, oddsAway, comparisonFavoriteOdds } = params;
+  if (!(oddsHome > 1.01) || !(oddsAway > 1.01)) return null;
+
+  const hasDraw = typeof oddsDraw === 'number' && Number.isFinite(oddsDraw) && oddsDraw > 1.01;
+  const rawHome = 1 / oddsHome;
+  const rawDraw = hasDraw ? 1 / (oddsDraw as number) : 0;
+  const rawAway = 1 / oddsAway;
+  const overround = rawHome + rawDraw + rawAway;
+
+  if (!(overround > 0)) return null;
+
+  const bookmakerMarginPct = Number(((overround - 1) * 100).toFixed(1));
+  const fairProbHome = Number(((rawHome / overround) * 100).toFixed(1));
+  const fairProbAway = Number(((rawAway / overround) * 100).toFixed(1));
+  const fairProbDraw = hasDraw ? Number(((rawDraw / overround) * 100).toFixed(1)) : null;
+
+  const favoriteSide: 'home' | 'away' = fairProbHome >= fairProbAway ? 'home' : 'away';
+  const favoriteOdds = Number((favoriteSide === 'home' ? oddsHome : oddsAway).toFixed(2));
+  const favoriteFairProb = Number(
+    Math.min(95, Math.max(5, favoriteSide === 'home' ? fairProbHome : fairProbAway)).toFixed(1)
+  );
+  const favoriteImpliedProb = Number(((1 / favoriteOdds) * 100).toFixed(1));
+
+  const hasComparison =
+    typeof comparisonFavoriteOdds === 'number' &&
+    Number.isFinite(comparisonFavoriteOdds) &&
+    comparisonFavoriteOdds > 1.01;
+
+  const valueScore = hasComparison
+    ? Number((((favoriteOdds / (comparisonFavoriteOdds as number)) - 1) * 100).toFixed(1))
+    : 0;
+
+  const marketAvgOdds = hasComparison
+    ? Number((comparisonFavoriteOdds as number).toFixed(2))
+    : favoriteOdds;
+
+  return {
+    fairProbHome,
+    fairProbDraw,
+    fairProbAway,
+    bookmakerMarginPct,
+    favoriteSide,
+    favoriteOdds,
+    favoriteFairProb,
+    favoriteImpliedProb,
+    valueScore,
+    marketAvgOdds,
+  };
+}
+
 export const RISK_PROFILES: Record<
   RiskLevel,
   {

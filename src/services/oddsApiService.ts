@@ -17,6 +17,15 @@ interface OddsApiBookmaker {
   markets: OddsApiMarket[];
 }
 
+interface OddsApiSport {
+  key: string;
+  group: string;
+  title: string;
+  description: string;
+  active: boolean;
+  has_outrights: boolean;
+}
+
 interface OddsApiEvent {
   id: string;
   sport_key: string;
@@ -27,9 +36,20 @@ interface OddsApiEvent {
   bookmakers: OddsApiBookmaker[];
 }
 
-function mapSportKey(sportKey: string, sportTitle: string): SportCategory {
+function mapSportGroupOrKey(group: string, sportKey: string, sportTitle: string): SportCategory {
+  if (group === 'Soccer') return 'Fotbal';
+  if (group === 'Ice Hockey') return 'Hokej';
+  if (group === 'Tennis') return 'Tenis';
+  if (group === 'Mixed Martial Arts') return 'MMA';
+  if (group === 'Basketball') return 'Basketbal';
+
   const s = `${sportKey} ${sportTitle}`.toLowerCase();
-  if (s.includes('hockey') || s.includes('nhl') || s.includes('khl') || s.includes('extraliga')) return 'Hokej';
+  if (s.includes('basketball') || s.includes('nba') || s.includes('euroleague') || s.includes('ncaab')) {
+    return 'Basketbal';
+  }
+  if (s.includes('hockey') || s.includes('nhl') || s.includes('khl') || s.includes('extraliga') || s.includes('liiga') || s.includes('shl')) {
+    return 'Hokej';
+  }
   if (s.includes('tennis') || s.includes('atp') || s.includes('wta')) return 'Tenis';
   if (s.includes('mma') || s.includes('ufc') || s.includes('boxing')) return 'MMA';
   return 'Fotbal';
@@ -39,9 +59,123 @@ function mapLeagueName(sportTitle: string): string {
   const lower = sportTitle.toLowerCase();
   if (lower.includes('epl') || lower.includes('premier league')) return 'Premier League';
   if (lower.includes('champions league')) return 'Liga mistrů';
+  if (lower.includes('europa league')) return 'Evropská liga';
   if (lower.includes('nhl')) return 'NHL';
+  if (lower.includes('nba')) return 'NBA';
+  if (lower.includes('euroleague')) return 'Euroliga';
   if (lower.includes('ufc') || lower.includes('mma')) return 'UFC / MMA';
   return sportTitle;
+}
+
+function scoreSoccerLeague(s: OddsApiSport): number {
+  const text = `${s.key} ${s.title} ${s.description}`.toLowerCase();
+  if (
+    text.includes('world_cup') ||
+    text.includes('nations_league') ||
+    text.includes('euro') ||
+    text.includes('qualif') ||
+    text.includes('friendly') ||
+    text.includes('conmebol') ||
+    text.includes('concacaf') ||
+    text.includes('afcon') ||
+    text.includes('copa_america')
+  ) {
+    return 100;
+  }
+  if (
+    text.includes('uefa_champs') ||
+    text.includes('uefa_europa') ||
+    text.includes('soccer_epl') ||
+    text.includes('spain_la_liga') ||
+    text.includes('germany_bundesliga') ||
+    text.includes('italy_serie_a') ||
+    text.includes('france_ligue_one') ||
+    text.includes('czech')
+  ) {
+    return 90;
+  }
+  if (
+    text.includes('efl_champ') ||
+    text.includes('bundesliga2') ||
+    text.includes('segunda') ||
+    text.includes('serie_b') ||
+    text.includes('ligue_two') ||
+    text.includes('eredivisie') ||
+    text.includes('primeira') ||
+    text.includes('poland') ||
+    text.includes('austria') ||
+    text.includes('switzerland') ||
+    text.includes('spl')
+  ) {
+    return 70;
+  }
+  return 40;
+}
+
+function scoreHockeyLeague(s: OddsApiSport): number {
+  const text = `${s.key} ${s.title}`.toLowerCase();
+  if (text.includes('nhl') || text.includes('czech') || text.includes('extraliga')) return 100;
+  if (text.includes('liiga') || text.includes('shl') || text.includes('sweden') || text.includes('finland')) {
+    return 85;
+  }
+  if (text.includes('ahl') || text.includes('mestis') || text.includes('allsvenskan') || text.includes('khl')) {
+    return 70;
+  }
+  return 45;
+}
+
+function scoreBasketballLeague(s: OddsApiSport): number {
+  const text = `${s.key} ${s.title}`.toLowerCase();
+  if (text.includes('basketball_nba') || s.title.toUpperCase() === 'NBA') return 100;
+  if (text.includes('euroleague')) return 95;
+  if (text.includes('eurocup')) return 75;
+  if (text.includes('acb') || text.includes('ncaab') || text.includes('wnba') || text.includes('nbl')) return 60;
+  return 40;
+}
+
+function selectActiveCompetitions(allSports: OddsApiSport[]): {
+  selected: Array<{ sport: OddsApiSport; category: SportCategory }>;
+  categoryByKey: Map<string, SportCategory>;
+} {
+  const activeMatchSports = allSports.filter((s) => s.active && !s.has_outrights);
+
+  const soccer = activeMatchSports
+    .filter((s) => s.group === 'Soccer')
+    .sort((a, b) => scoreSoccerLeague(b) - scoreSoccerLeague(a))
+    .slice(0, 5);
+
+  const hockey = activeMatchSports
+    .filter((s) => s.group === 'Ice Hockey')
+    .sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a));
+
+  const allTennis = activeMatchSports.filter((s) => s.group === 'Tennis');
+  const atpWtaTennis = allTennis.filter((s) => {
+    const text = `${s.key} ${s.title}`.toLowerCase();
+    return text.includes('atp') || text.includes('wta');
+  });
+  const tennis = atpWtaTennis.length > 0 ? atpWtaTennis : allTennis;
+
+  const mma = activeMatchSports.filter((s) => s.group === 'Mixed Martial Arts');
+
+  const basketball = activeMatchSports
+    .filter((s) => s.group === 'Basketball')
+    .sort((a, b) => scoreBasketballLeague(b) - scoreBasketballLeague(a))
+    .slice(0, 4);
+
+  const selected: Array<{ sport: OddsApiSport; category: SportCategory }> = [
+    ...soccer.map((sport) => ({ sport, category: 'Fotbal' as const })),
+    ...hockey.map((sport) => ({ sport, category: 'Hokej' as const })),
+    ...tennis.map((sport) => ({ sport, category: 'Tenis' as const })),
+    ...mma.map((sport) => ({ sport, category: 'MMA' as const })),
+    ...basketball.map((sport) => ({ sport, category: 'Basketbal' as const })),
+  ];
+
+  const categoryByKey = new Map<string, SportCategory>();
+  selected.forEach(({ sport, category }) => {
+    categoryByKey.set(sport.key, category);
+  });
+
+  return { selected, categoryByKey };
 }
 
 function formatCzechKickoff(iso: string): { label: string; timeWindow: TimeWindow } {
@@ -240,14 +374,39 @@ export async function fetchLiveOddsAndStats(
     throw new Error('Chybí API klíč pro The Odds API.');
   }
 
-  const endpoints = [
-    `https://api.the-odds-api.com/v4/sports/upcoming/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`,
-    `https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`,
-    `https://api.the-odds-api.com/v4/sports/icehockey_nhl/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`,
-  ];
+  // 1. Free discovery call (0 quota credits) to find all currently active competitions
+  const sportsRes = await fetch(
+    `https://api.the-odds-api.com/v4/sports/?apiKey=${encodeURIComponent(key)}`
+  );
+  if (!sportsRes.ok) {
+    const detail = await extractHttpErrorDetail(sportsRes);
+    throw new Error(
+      `The Odds API HTTP ${sportsRes.status}${sportsRes.statusText ? ` ${sportsRes.statusText}` : ''}: ${detail}`
+    );
+  }
+
+  let remainingQuota: string | null = sportsRes.headers.get('x-requests-remaining');
+  const allSports = (await sportsRes.json()) as OddsApiSport[];
+  if (!Array.isArray(allSports)) {
+    throw new Error('The Odds API vrátilo neplatný seznam aktivních sportů.');
+  }
+
+  const { selected: activeCompetitions, categoryByKey } = selectActiveCompetitions(allSports);
+  if (activeCompetitions.length === 0) {
+    throw new Error(
+      'V The Odds API momentálně nejsou aktivní žádné soutěže pro Fotbal, Hokej, Tenis, MMA ani Basketbal.'
+    );
+  }
+
+  // 2. Fetch h2h odds for each discovered active competition
+  const endpoints = activeCompetitions.map(
+    ({ sport }) =>
+      `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds/?apiKey=${encodeURIComponent(
+        key
+      )}&regions=eu&markets=h2h`
+  );
 
   const responses = await Promise.allSettled(endpoints.map((url) => fetch(url)));
-  let remainingQuota: string | null = null;
   const eventMap = new Map<string, OddsApiEvent>();
   const httpErrors: string[] = [];
 
@@ -276,20 +435,36 @@ export async function fetchLiveOddsAndStats(
     }
   }
 
-  const events = Array.from(eventMap.values()).slice(0, 18);
+  // Balance up to 8 nearest upcoming events per sport category so one sport never crowds out others
+  const eventsBySport = new Map<SportCategory, OddsApiEvent[]>();
+  for (const ev of eventMap.values()) {
+    const cat = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey('', ev.sport_key, ev.sport_title);
+    const list = eventsBySport.get(cat) ?? [];
+    list.push(ev);
+    eventsBySport.set(cat, list);
+  }
+
+  const events: OddsApiEvent[] = [];
+  for (const list of eventsBySport.values()) {
+    list.sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
+    events.push(...list.slice(0, 8));
+  }
+  events.sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time));
+
   if (events.length === 0) {
     if (httpErrors.length > 0) {
       throw new Error(httpErrors[0]);
     }
-    throw new Error('The Odds API vrátilo HTTP 200, ale žádné nadcházející zápasy s aktivními kurzy.');
+    throw new Error('The Odds API vrátilo aktivní soutěže, ale momentálně žádné zápasy s vypsanými kurzy.');
   }
 
   const analyzed: MatchAnalysis[] = [];
   let apiSportsWarning: string | null = null;
+  let apiSportsLookups = 0;
 
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
-    const sport = mapSportKey(ev.sport_key, ev.sport_title);
+    const sport = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey('', ev.sport_key, ev.sport_title);
     const league = mapLeagueName(ev.sport_title);
     const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
 
@@ -342,7 +517,8 @@ export async function fetchLiveOddsAndStats(
 
     let formHome: FormResult[] | null = null;
     let formAway: FormResult[] | null = null;
-    if (apiSportsKey.trim() && i < 6) {
+    if (apiSportsKey.trim() && (sport === 'Fotbal' || sport === 'Hokej') && apiSportsLookups < 6) {
+      apiSportsLookups += 1;
       const [resHome, resAway] = await Promise.all([
         fetchApiSportsTeamForm(ev.home_team, sport, apiSportsKey),
         fetchApiSportsTeamForm(ev.away_team, sport, apiSportsKey),
