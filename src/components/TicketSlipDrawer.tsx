@@ -17,7 +17,7 @@ interface TicketSlipDrawerProps {
   onRemoveMatch: (matchId: string) => void;
   onClearSlip: () => void;
   onSaveTicket: (ticket: Ticket) => void;
-  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
 }
 
 export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
@@ -168,7 +168,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                       href={BETANO_HOME_URL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={() => onOpenBetano(m.homeTeam, m.awayTeam)}
+                      onClick={() => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick)}
                       className="inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300"
                     >
                       <span>Betano</span>

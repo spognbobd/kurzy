@@ -11645,10 +11645,25 @@ function formatPercent(value, showSign = false) {
 	return `${formatted} %`;
 }
 var BETANO_HOME_URL = "https://www.betano.cz/";
-function copyMatchForBetano(homeTeam, awayTeam) {
+function copyMatchForBetano(homeTeam, awayTeam, recommendedPick) {
 	const cleanHome = homeTeam.replace(/\(.*?\)/g, "").trim();
 	const cleanAway = awayTeam.replace(/\(.*?\)/g, "").trim();
-	const textToCopy = cleanHome || cleanAway;
+	let textToCopy = cleanHome || cleanAway;
+	if (recommendedPick) {
+		const trimmedPick = recommendedPick.trim();
+		const isWinPick = /^výhra\s+/i.test(trimmedPick);
+		const strippedName = trimmedPick.replace(/^výhra\s+/i, "").replace(/\(.*?\)/g, "").trim();
+		const lowerStripped = strippedName.toLowerCase();
+		const lowerHome = cleanHome.toLowerCase();
+		const lowerAway = cleanAway.toLowerCase();
+		if (/\(2\)/.test(trimmedPick) && cleanAway) textToCopy = cleanAway;
+		else if (/\(1\)/.test(trimmedPick) && cleanHome) textToCopy = cleanHome;
+		else if (isWinPick && strippedName) {
+			if (lowerAway && (lowerAway === lowerStripped || lowerAway.includes(lowerStripped))) textToCopy = cleanAway;
+			else if (lowerHome && (lowerHome === lowerStripped || lowerHome.includes(lowerStripped))) textToCopy = cleanHome;
+			else textToCopy = strippedName;
+		}
+	}
 	if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) navigator.clipboard.writeText(textToCopy).catch(() => {
 		fallbackCopyText(textToCopy);
 	});
@@ -14616,7 +14631,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 								href: BETANO_HOME_URL,
 								target: "_blank",
 								rel: "noopener noreferrer",
-								onClick: () => onOpenBetano(match.homeTeam, match.awayTeam),
+								onClick: () => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick),
 								className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Najít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-4 w-4 shrink-0 text-slate-400" })]
 							})]
@@ -15266,7 +15281,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 										href: BETANO_HOME_URL,
 										target: "_blank",
 										rel: "noopener noreferrer",
-										onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam),
+										onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
 										className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
 									})]
@@ -15753,7 +15768,7 @@ var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket,
 												href: BETANO_HOME_URL,
 												target: "_blank",
 												rel: "noopener noreferrer",
-												onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam),
+												onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
 												className: "inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300",
 												title: "Otevřít na Betanu",
 												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
@@ -16197,7 +16212,7 @@ var TicketSlipDrawer = ({ isOpen, onClose, selectedMatches, currentBankroll, onR
 									href: BETANO_HOME_URL,
 									target: "_blank",
 									rel: "noopener noreferrer",
-									onClick: () => onOpenBetano(m.homeTeam, m.awayTeam),
+									onClick: () => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick),
 									className: "inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
 								})]
@@ -16762,9 +16777,9 @@ function App() {
 			setToastMessage((prev) => prev === msg ? null : prev);
 		}, 3200);
 	}, []);
-	const handleOpenBetano = (0, import_react.useCallback)((homeTeam, awayTeam) => {
-		copyMatchForBetano(homeTeam, awayTeam);
-		showToast("Zkopírováno, vlož v Betanu do vyhledávání");
+	const handleOpenBetano = (0, import_react.useCallback)((homeTeam, awayTeam, recommendedPick) => {
+		const copiedName = copyMatchForBetano(homeTeam, awayTeam, recommendedPick);
+		showToast(`Zkopírováno „${copiedName}“, vlož v Betanu do vyhledávání`);
 	}, [showToast]);
 	const handleFetchLiveData = (0, import_react.useCallback)(async (oddsKey, sportsKey) => {
 		const trimmedOdds = oddsKey.trim();

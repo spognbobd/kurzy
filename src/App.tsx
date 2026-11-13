@@ -45,9 +45,9 @@ export default function App() {
   }, []);
 
   const handleOpenBetano = useCallback(
-    (homeTeam: string, awayTeam: string) => {
-      copyMatchForBetano(homeTeam, awayTeam);
-      showToast('Zkopírováno, vlož v Betanu do vyhledávání');
+    (homeTeam: string, awayTeam: string, recommendedPick?: string) => {
+      const copiedName = copyMatchForBetano(homeTeam, awayTeam, recommendedPick);
+      showToast(`Zkopírováno „${copiedName}“, vlož v Betanu do vyhledávání`);
     },
     [showToast]
   );

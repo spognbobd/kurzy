@@ -28,10 +28,41 @@ export function formatPercent(value: number, showSign = false): string {
 
 export const BETANO_HOME_URL = 'https://www.betano.cz/';
 
-export function copyMatchForBetano(homeTeam: string, awayTeam: string): string {
+export function copyMatchForBetano(
+  homeTeam: string,
+  awayTeam: string,
+  recommendedPick?: string
+): string {
   const cleanHome = homeTeam.replace(/\(.*?\)/g, '').trim();
   const cleanAway = awayTeam.replace(/\(.*?\)/g, '').trim();
-  const textToCopy = cleanHome || cleanAway;
+
+  let textToCopy = cleanHome || cleanAway;
+
+  if (recommendedPick) {
+    const trimmedPick = recommendedPick.trim();
+    const isWinPick = /^výhra\s+/i.test(trimmedPick);
+    const strippedName = trimmedPick
+      .replace(/^výhra\s+/i, '')
+      .replace(/\(.*?\)/g, '')
+      .trim();
+    const lowerStripped = strippedName.toLowerCase();
+    const lowerHome = cleanHome.toLowerCase();
+    const lowerAway = cleanAway.toLowerCase();
+
+    if (/\(2\)/.test(trimmedPick) && cleanAway) {
+      textToCopy = cleanAway;
+    } else if (/\(1\)/.test(trimmedPick) && cleanHome) {
+      textToCopy = cleanHome;
+    } else if (isWinPick && strippedName) {
+      if (lowerAway && (lowerAway === lowerStripped || lowerAway.includes(lowerStripped))) {
+        textToCopy = cleanAway;
+      } else if (lowerHome && (lowerHome === lowerStripped || lowerHome.includes(lowerStripped))) {
+        textToCopy = cleanHome;
+      } else {
+        textToCopy = strippedName;
+      }
+    }
+  }
 
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(textToCopy).catch(() => {

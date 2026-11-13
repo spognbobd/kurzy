@@ -28,7 +28,7 @@ interface MatchFeedProps {
   matches: MatchAnalysis[];
   selectedMatchIds: string[];
   onToggleMatchOnSlip: (match: MatchAnalysis) => void;
-  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
   isDemoMode: boolean;
   isLoadingLive: boolean;
   liveError: string | null;
@@ -538,7 +538,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     href={BETANO_HOME_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={() => onOpenBetano(match.homeTeam, match.awayTeam)}
+                    onClick={() => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick)}
                     className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                   >
                     <span>Najít na Betanu</span>

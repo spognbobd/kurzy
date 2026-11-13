@@ -21,7 +21,7 @@ interface BankrollStatsProps {
   onDeleteTicket: (ticketId: string) => void;
   onResetDemoHistory: () => void;
   onStartFromScratch: () => void;
-  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
 }
 
 type StatusFilter = 'all' | TicketStatus;
@@ -501,7 +501,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             href={BETANO_HOME_URL}
                             target="_blank"
                             rel="noopener noreferrer"
-                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam)}
+                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
                             className="inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300"
                             title="Otevřít na Betanu"
                           >

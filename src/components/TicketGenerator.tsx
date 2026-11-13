@@ -35,7 +35,7 @@ interface TicketGeneratorProps {
   matches: MatchAnalysis[];
   currentBankroll: number;
   onSaveTicket: (ticket: Ticket) => void;
-  onOpenBetano: (homeTeam: string, awayTeam: string) => void;
+  onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
   onOpenCustomMatchModal: () => void;
   onDeleteCustomMatch: (matchId: string) => void;
 }
@@ -661,7 +661,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         href={BETANO_HOME_URL}
                         target="_blank"
                         rel="noopener noreferrer"
-                        onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam)}
+                        onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
                         className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                       >
                         <span>Otevřít na Betanu</span>
