@@ -64,15 +64,35 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   onSaveTicket,
   onOpenBetano,
 }) => {
+  const recommendedMinProb = useMemo(() => {
+    if (matches.length === 0) return 55;
+    const sorted = [...matches].sort((a, b) => b.aiProbability - a.aiProbability);
+    const refIndex = Math.min(2, sorted.length - 1);
+    const refProb = sorted[refIndex].aiProbability;
+    if (refProb < 55) {
+      return Math.max(25, Math.min(85, Math.floor(refProb)));
+    }
+    return 55;
+  }, [matches]);
+
+  const matchesSignature = useMemo(
+    () => matches.map((m) => `${m.id}:${m.aiProbability}`).join('|'),
+    [matches]
+  );
+
   const [budget, setBudget] = useState<number>(Math.max(5, Math.round(currentBankroll)));
   const [ticketStyle, setTicketStyle] = useState<TicketStyle>('safe');
-  const [minMatchProbability, setMinMatchProbability] = useState<number>(55);
+  const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
   const [riskLevel, setRiskLevel] = useState<RiskLevel>('Vyvážený');
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(['Fotbal', 'Hokej', 'Tenis', 'MMA']);
   const [variationIndex, setVariationIndex] = useState(0);
   const [generated, setGenerated] = useState<GeneratedTicketResult | null>(null);
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
+
+  useEffect(() => {
+    setMinMatchProbability(recommendedMinProb);
+  }, [matchesSignature, recommendedMinProb]);
 
   const eligibleMatchesCount = useMemo(
     () =>
@@ -246,10 +266,18 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               className="mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
             />
 
-            <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] tabular-nums text-slate-500">
+            <div className="mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500">
               <span>25 %</span>
               <span className={minMatchProbability < 45 ? 'text-amber-400' : ''}>45 %</span>
-              <span className={minMatchProbability === 55 ? 'text-emerald-400' : ''}>55 % (výchozí)</span>
+              <button
+                type="button"
+                onClick={() => setMinMatchProbability(recommendedMinProb)}
+                className={`transition-colors hover:text-emerald-300 ${
+                  minMatchProbability === recommendedMinProb ? 'text-emerald-400 font-semibold' : 'text-slate-400'
+                }`}
+              >
+                Auto: {recommendedMinProb} % (min. 3 zápasy)
+              </button>
               <span>85 %</span>
             </div>
 
@@ -401,10 +429,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setMinMatchProbability(55)}
+                  onClick={() => setMinMatchProbability(recommendedMinProb)}
                   className="inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                 >
-                  Nastavit limit na 55 %
+                  Nastavit doporučený limit ({recommendedMinProb} %)
                 </button>
                 <button
                   type="button"

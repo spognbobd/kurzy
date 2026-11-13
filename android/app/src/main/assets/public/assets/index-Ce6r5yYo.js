@@ -14354,9 +14354,17 @@ var RISK_BADGE_STYLES = {
 	}
 };
 var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano }) => {
+	const recommendedMinProb = (0, import_react.useMemo)(() => {
+		if (matches.length === 0) return 55;
+		const sorted = [...matches].sort((a, b) => b.aiProbability - a.aiProbability);
+		const refProb = sorted[Math.min(2, sorted.length - 1)].aiProbability;
+		if (refProb < 55) return Math.max(25, Math.min(85, Math.floor(refProb)));
+		return 55;
+	}, [matches]);
+	const matchesSignature = (0, import_react.useMemo)(() => matches.map((m) => `${m.id}:${m.aiProbability}`).join("|"), [matches]);
 	const [budget, setBudget] = (0, import_react.useState)(Math.max(5, Math.round(currentBankroll)));
 	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
-	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(55);
+	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
 	const [riskLevel, setRiskLevel] = (0, import_react.useState)("Vyvážený");
 	const [selectedSports, setSelectedSports] = (0, import_react.useState)([
 		"Fotbal",
@@ -14368,6 +14376,9 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	const [generated, setGenerated] = (0, import_react.useState)(null);
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
+	(0, import_react.useEffect)(() => {
+		setMinMatchProbability(recommendedMinProb);
+	}, [matchesSignature, recommendedMinProb]);
 	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability).length, [
 		matches,
 		selectedSports,
@@ -14513,16 +14524,22 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 								className: "mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-1.5 flex items-center justify-between font-mono text-[11px] tabular-nums text-slate-500",
+								className: "mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500",
 								children: [
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "25 %" }),
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 										className: minMatchProbability < 45 ? "text-amber-400" : "",
 										children: "45 %"
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: minMatchProbability === 55 ? "text-emerald-400" : "",
-										children: "55 % (výchozí)"
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => setMinMatchProbability(recommendedMinProb),
+										className: `transition-colors hover:text-emerald-300 ${minMatchProbability === recommendedMinProb ? "text-emerald-400 font-semibold" : "text-slate-400"}`,
+										children: [
+											"Auto: ",
+											recommendedMinProb,
+											" % (min. 3 zápasy)"
+										]
 									}),
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "85 %" })
 								]
@@ -14667,11 +14684,15 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "mt-5 flex flex-wrap items-center justify-center gap-3",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 								type: "button",
-								onClick: () => setMinMatchProbability(55),
+								onClick: () => setMinMatchProbability(recommendedMinProb),
 								className: "inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
-								children: "Nastavit limit na 55 %"
+								children: [
+									"Nastavit doporučený limit (",
+									recommendedMinProb,
+									" %)"
+								]
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 								type: "button",
 								onClick: () => setSelectedSports([
