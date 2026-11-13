@@ -11757,6 +11757,11 @@ function calculateSafeStake(budget, totalOdds, jointProbabilityPct, riskLevel) {
 	if (rawStake < 50) return Math.max(5, Math.round(rawStake));
 	return Math.max(5, Math.round(rawStake / 10) * 10);
 }
+function computeEstimatedRisk(totalProbabilityPct) {
+	if (totalProbabilityPct >= 30) return "Nízké";
+	if (totalProbabilityPct >= 15) return "Střední";
+	return "Vyšší";
+}
 function toLeg(m) {
 	return {
 		matchId: m.id,
@@ -11773,89 +11778,100 @@ function toLeg(m) {
 	};
 }
 /**
-* Generates an optimal ticket matching the selected risk profile & sports.
-* Supports variationIndex to rotate through top valid combinations.
+* Generates an optimal ticket matching the selected ticket style, minimum match probability,
+* risk profile, and sports. Supports variationIndex to rotate through top valid combinations.
 */
-function generateOptimalTicket(matches, selectedSports, riskLevel, budget, variationIndex = 0) {
-	const pool = matches.filter((m) => selectedSports.includes(m.sport));
+function generateOptimalTicket(matches, selectedSports, riskLevel, budget, variationIndex = 0, options = {}) {
+	const ticketStyle = options.ticketStyle ?? "safe";
+	const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
+	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability);
+	if (eligible.length === 0) return null;
 	const profile = RISK_PROFILES[riskLevel];
-	if (pool.length < 2) return null;
-	const candidates = [...pool].sort((a, b) => {
-		if (riskLevel === "Konzervativní") {
-			const scoreA = a.aiProbability * 1.4 + a.valueScore * 2.5 - Math.abs(a.odds.betano - 1.5) * 10;
-			return b.aiProbability * 1.4 + b.valueScore * 2.5 - Math.abs(b.odds.betano - 1.5) * 10 - scoreA;
+	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
+	let candidatePool;
+	let minLegs;
+	let maxLegs;
+	if (ticketStyle === "safe") {
+		candidatePool = [...eligible].sort((a, b) => {
+			const marketEdgeA = (a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg) * 100;
+			const marketEdgeB = (b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg) * 100;
+			const scoreA = a.aiProbability * 2.5 + marketEdgeA * 1.8 + Math.max(0, a.valueScore) * 1.1;
+			return b.aiProbability * 2.5 + marketEdgeB * 1.8 + Math.max(0, b.valueScore) * 1.1 - scoreA;
+		});
+		minLegs = Math.min(2, candidatePool.length);
+		maxLegs = Math.min(3, candidatePool.length);
+	} else {
+		const positiveEligible = eligible.filter((m) => m.valueScore > 0);
+		candidatePool = [...positiveEligible.length > 0 ? positiveEligible : eligible].sort((a, b) => {
+			const marketEdgeA = (a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg) * 100;
+			const marketEdgeB = (b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg) * 100;
+			const scoreA = a.valueScore * 3.2 + marketEdgeA * 1.5 + a.aiProbability * .45;
+			return b.valueScore * 3.2 + marketEdgeB * 1.5 + b.aiProbability * .45 - scoreA;
+		});
+		if (isLowProbCapped) {
+			minLegs = 1;
+			maxLegs = Math.min(2, candidatePool.length);
+		} else {
+			minLegs = Math.min(2, candidatePool.length);
+			maxLegs = Math.min(riskLevel === "Konzervativní" ? 3 : riskLevel === "Vyvážený" ? 4 : 5, candidatePool.length);
 		}
-		if (riskLevel === "Vyvážený") {
-			const scoreA = a.valueScore * 3 + a.aiProbability * .8;
-			return b.valueScore * 3 + b.aiProbability * .8 - scoreA;
-		}
-		const scoreA = a.valueScore * 2.5 + a.odds.betano * 6 + a.aiProbability * .35;
-		return b.valueScore * 2.5 + b.odds.betano * 6 + b.aiProbability * .35 - scoreA;
-	}).slice(0, 14);
+	}
+	const candidates = candidatePool.slice(0, 14);
 	const validCombos = [];
-	const targetMid = (profile.minOdds + profile.maxOdds) / 2;
 	function backtrack(start, current, currentOdds) {
-		if (current.length >= profile.minLegs && current.length <= profile.maxLegs) {
-			if (riskLevel === "Odvážný" ? currentOdds >= profile.minOdds : currentOdds >= profile.minOdds && currentOdds <= profile.maxOdds) {
-				const jointProb = current.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100;
-				const avgValue = current.reduce((acc, m) => acc + m.valueScore, 0) / current.length;
-				const distPenalty = riskLevel === "Odvážný" ? Math.max(0, currentOdds - 22) * .5 : Math.abs(currentOdds - targetMid) * 4;
-				const comboScore = avgValue * 3 + jointProb * .9 - distPenalty;
-				validCombos.push({
-					legs: [...current],
-					totalOdds: Number(currentOdds.toFixed(2)),
-					jointProb: Number(jointProb.toFixed(1)),
-					score: comboScore
-				});
+		if (current.length >= minLegs && current.length <= maxLegs) {
+			const jointProb = current.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100;
+			const avgValue = current.reduce((acc, m) => acc + m.valueScore, 0) / current.length;
+			const avgMarketDiff = current.reduce((acc, m) => acc + (m.odds.betano - m.odds.marketAvg) / Math.max(1, m.odds.marketAvg) * 100, 0) / current.length;
+			let comboScore;
+			if (ticketStyle === "safe") comboScore = jointProb * 2.4 + avgMarketDiff * 1.8 + Math.max(0, avgValue) * 1.2;
+			else {
+				const targetMid = (profile.minOdds + profile.maxOdds) / 2;
+				const oddsDistancePenalty = isLowProbCapped ? 0 : Math.abs(currentOdds - targetMid) * 1.25;
+				comboScore = avgValue * 3.4 + avgMarketDiff * 1.5 + jointProb * .8 - oddsDistancePenalty;
 			}
+			validCombos.push({
+				legs: [...current],
+				totalOdds: Number(currentOdds.toFixed(2)),
+				jointProb: Number(jointProb.toFixed(1)),
+				score: comboScore
+			});
 		}
-		if (current.length === profile.maxLegs || validCombos.length > 220) return;
+		if (current.length === maxLegs || validCombos.length > 240) return;
 		for (let i = start; i < candidates.length; i++) {
 			const next = candidates[i];
-			const nextOdds = currentOdds * next.odds.betano;
-			if (riskLevel !== "Odvážný" && nextOdds > profile.maxOdds * 1.15) continue;
 			current.push(next);
-			backtrack(i + 1, current, nextOdds);
+			backtrack(i + 1, current, currentOdds * next.odds.betano);
 			current.pop();
 		}
 	}
 	backtrack(0, [], 1);
-	if (validCombos.length > 0) {
-		validCombos.sort((a, b) => b.score - a.score);
-		const chosen = validCombos[variationIndex % Math.min(validCombos.length, 6)];
-		const legs = chosen.legs.map(toLeg);
-		const recommendedStake = calculateSafeStake(budget, chosen.totalOdds, chosen.jointProb, riskLevel);
-		return {
-			legs,
-			totalOdds: chosen.totalOdds,
-			totalProbability: chosen.jointProb,
-			recommendedStake,
-			potentialWin: Math.round(recommendedStake * chosen.totalOdds),
-			note: `Optimální kombinace ${legs.length} zápasů pro profil ${riskLevel} s průměrným Value skóre +${(legs.reduce((s, l) => s + l.valueScore, 0) / legs.length).toFixed(1)} %.`
-		};
-	}
-	const desiredCount = Math.min(candidates.length, Math.max(2, profile.minLegs));
-	const offset = variationIndex % Math.max(1, candidates.length - desiredCount + 1);
-	const picked = candidates.slice(offset, offset + desiredCount);
-	let totalOdds = picked.reduce((acc, m) => acc * m.odds.betano, 1);
-	for (let i = 0; i < candidates.length && picked.length < profile.maxLegs; i++) {
-		const c = candidates[i];
-		if (picked.some((p) => p.id === c.id)) continue;
-		if (totalOdds < profile.minOdds) {
-			picked.push(c);
-			totalOdds *= c.odds.betano;
-		}
-	}
-	const finalOdds = Number(totalOdds.toFixed(2));
-	const jointProb = Number((picked.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100).toFixed(1));
-	const recommendedStake = calculateSafeStake(budget, finalOdds, jointProb, riskLevel);
+	validCombos.sort((a, b) => b.score - a.score);
+	const chosen = validCombos.length > 0 ? validCombos[variationIndex % Math.min(validCombos.length, 6)] : {
+		legs: candidates.slice(0, Math.max(1, minLegs)),
+		totalOdds: Number(candidates.slice(0, Math.max(1, minLegs)).reduce((acc, m) => acc * m.odds.betano, 1).toFixed(2)),
+		jointProb: Number((candidates.slice(0, Math.max(1, minLegs)).reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100).toFixed(1)),
+		score: 0
+	};
+	const legs = chosen.legs.map(toLeg);
+	const effectiveRiskForStake = ticketStyle === "safe" ? "Konzervativní" : riskLevel;
+	const recommendedStake = calculateSafeStake(budget, chosen.totalOdds, chosen.jointProb, effectiveRiskForStake);
+	const estimatedRisk = computeEstimatedRisk(chosen.jointProb);
+	const avgValue = legs.reduce((s, l) => s + l.valueScore, 0) / legs.length;
+	let note;
+	if (ticketStyle === "safe") note = `Bezpečný tiket (${legs.length} ${legs.length === 1 ? "zápas" : legs.length <= 4 ? "zápasy" : "zápasů"}) s nejvyšší pravděpodobností výhry nad ${minMatchProbability} % a nejlepším kurzem na trhu.`;
+	else if (isLowProbCapped) note = `Chytrý Value tiket automaticky omezen na ${legs.length === 1 ? "sólo (1 zápas)" : "double (2 zápasy)"}, protože minimální pravděpodobnost je pod 45 % (průměrné Value ${formatPercent(avgValue, true)}).`;
+	else note = `Chytrý Value tiket kombinující ${legs.length} ${legs.length <= 4 ? "zápasy" : "zápasů"} nad ${minMatchProbability} % s průměrným Value ${formatPercent(avgValue, true)} oproti trhu.`;
 	return {
-		legs: picked.map(toLeg),
-		totalOdds: finalOdds,
-		totalProbability: jointProb,
+		legs,
+		totalOdds: chosen.totalOdds,
+		totalProbability: chosen.jointProb,
+		estimatedRisk,
+		style: ticketStyle,
+		minMatchProbability,
 		recommendedStake,
-		potentialWin: Math.round(recommendedStake * finalOdds),
-		note: `Nejlepší dostupná kombinace ${picked.length} zápasů pro vybrané sporty (${selectedSports.join(", ")}).`
+		potentialWin: Math.round(recommendedStake * chosen.totalOdds),
+		note
 	};
 }
 var DEMO_MATCHES = [
@@ -13521,6 +13537,26 @@ var TrendingUp = createLucideIcon("trending-up", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var TriangleAlert = createLucideIcon("triangle-alert", [
+	["path", {
+		d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3",
+		key: "wmoenq"
+	}],
+	["path", {
+		d: "M12 9v4",
+		key: "juzpu7"
+	}],
+	["path", {
+		d: "M12 17h.01",
+		key: "p32p05"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var WifiOff = createLucideIcon("wifi-off", [
 	["path", {
 		d: "M12 20h.01",
@@ -14300,8 +14336,27 @@ var BUDGET_PRESETS = [
 	1e3,
 	5e3
 ];
+var RISK_BADGE_STYLES = {
+	Nízké: {
+		container: "border-emerald-500/40 bg-emerald-500/10",
+		text: "text-emerald-300",
+		dot: "bg-emerald-400"
+	},
+	Střední: {
+		container: "border-amber-500/40 bg-amber-500/10",
+		text: "text-amber-300",
+		dot: "bg-amber-400"
+	},
+	Vyšší: {
+		container: "border-rose-500/40 bg-rose-500/10",
+		text: "text-rose-300",
+		dot: "bg-rose-400"
+	}
+};
 var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano }) => {
 	const [budget, setBudget] = (0, import_react.useState)(Math.max(5, Math.round(currentBankroll)));
+	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
+	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(55);
 	const [riskLevel, setRiskLevel] = (0, import_react.useState)("Vyvážený");
 	const [selectedSports, setSelectedSports] = (0, import_react.useState)([
 		"Fotbal",
@@ -14313,20 +14368,27 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	const [generated, setGenerated] = (0, import_react.useState)(null);
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
+	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability).length, [
+		matches,
+		selectedSports,
+		minMatchProbability
+	]);
 	(0, import_react.useEffect)(() => {
-		if (!generated && matches.length >= 2) {
-			const initial = generateOptimalTicket(matches, selectedSports, riskLevel, budget, 0);
-			if (initial) {
-				setGenerated(initial);
-				setCustomStake(initial.recommendedStake);
-			}
-		}
+		const next = generateOptimalTicket(matches, selectedSports, riskLevel, Math.max(5, budget || 5), 0, {
+			ticketStyle,
+			minMatchProbability
+		});
+		setVariationIndex(0);
+		setGenerated(next);
+		setSavedFeedback(false);
+		if (next) setCustomStake(next.recommendedStake);
 	}, [
 		matches,
-		generated,
 		selectedSports,
 		riskLevel,
-		budget
+		budget,
+		ticketStyle,
+		minMatchProbability
 	]);
 	const toggleSport = (sport) => {
 		setSelectedSports((prev) => {
@@ -14338,7 +14400,10 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 		});
 	};
 	const handleGenerate = (nextVariation = 0) => {
-		const res = generateOptimalTicket(matches, selectedSports, riskLevel, Math.max(5, budget || 5), nextVariation);
+		const res = generateOptimalTicket(matches, selectedSports, riskLevel, Math.max(5, budget || 5), nextVariation, {
+			ticketStyle,
+			minMatchProbability
+		});
 		setVariationIndex(nextVariation);
 		setGenerated(res);
 		setSavedFeedback(false);
@@ -14347,11 +14412,12 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	const handleSave = () => {
 		if (!generated) return;
 		const stake = Math.max(5, Math.round(customStake || generated.recommendedStake));
+		const styleTitle = generated.style === "safe" ? "Bezpečný" : "Chytrý Value";
 		onSaveTicket({
 			id: `tkt-${Date.now()}`,
 			createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-			label: `${riskLevel} AI tiket (${generated.legs.length} zápasy)`,
-			riskLevel,
+			label: `${styleTitle} AI tiket (${generated.legs.length} ${generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů"})`,
+			riskLevel: generated.style === "safe" ? "Konzervativní" : riskLevel,
 			legs: generated.legs,
 			totalOdds: generated.totalOdds,
 			totalProbability: generated.totalProbability,
@@ -14366,11 +14432,13 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 	};
 	const activeStake = Math.max(5, customStake || (generated?.recommendedStake ?? 5));
 	const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
+	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
+	const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "space-y-6",
 		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 			className: "text-xs text-slate-400",
-			children: "Algoritmický výběr podle Value skóre, AI pravděpodobnosti a bezpečného bankroll managementu"
+			children: "Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)"
 		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
 			className: "mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl",
 			children: "Generátor optimálního tiketu"
@@ -14379,70 +14447,173 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
 				className: "space-y-5 rounded-2xl border border-slate-800/90 bg-[#111827] p-5 lg:col-span-5",
 				children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex items-center justify-between",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
-								htmlFor: "generator-budget",
-								className: "text-sm font-semibold text-slate-100",
-								children: "Váš rozpočet (Kč)"
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-								type: "button",
-								onClick: () => setBudget(Math.max(5, Math.round(currentBankroll))),
-								className: "text-xs font-medium text-emerald-400 hover:text-emerald-300",
-								children: [
-									"Použít bankroll (",
-									formatCZK(currentBankroll),
-									")"
-								]
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+						className: "block text-sm font-semibold text-slate-100",
+						children: "Styl tiketu"
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "mt-2.5 grid grid-cols-1 gap-2.5",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => setTicketStyle("safe"),
+							className: `w-full rounded-xl border p-3.5 text-left transition-colors ${ticketStyle === "safe" ? "border-emerald-500/60 bg-emerald-500/10" : "border-slate-800 bg-[#0B101B] hover:border-slate-700"}`,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: `inline-flex items-center gap-2 font-display text-sm font-bold ${ticketStyle === "safe" ? "text-emerald-300" : "text-slate-100"}`,
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Bezpečný tiket (Nejnižší riziko)" })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "font-mono text-[11px] tabular-nums text-slate-400",
+									children: "2–3 zápasy"
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "mt-1.5 text-xs leading-relaxed text-slate-400",
+								children: "Vybere max. 2–3 zápasy s nejvyšší pravděpodobností výhry nad zvolený limit a nejlepším kurzem na trhu."
 							})]
-						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-							id: "generator-budget",
-							type: "number",
-							min: 5,
-							step: 5,
-							value: budget,
-							onChange: (e) => setBudget(Number(e.target.value)),
-							onBlur: () => setBudget((b) => Math.max(5, Math.round(b || 5))),
-							className: "mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
-						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-							className: "mt-2 flex flex-wrap gap-1.5",
-							children: BUDGET_PRESETS.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-								type: "button",
-								onClick: () => setBudget(preset),
-								className: `min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-xs tabular-nums transition-colors ${budget === preset ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200"}`,
-								children: formatCZK(preset)
-							}, preset))
-						})
-					] }),
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => setTicketStyle("smart_value"),
+							className: `w-full rounded-xl border p-3.5 text-left transition-colors ${ticketStyle === "smart_value" ? "border-emerald-500/60 bg-emerald-500/10" : "border-slate-800 bg-[#0B101B] hover:border-slate-700"}`,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: `inline-flex items-center gap-2 font-display text-sm font-bold ${ticketStyle === "smart_value" ? "text-emerald-300" : "text-slate-100"}`,
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TrendingUp, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Chytrý Value tiket" })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "font-mono text-[11px] tabular-nums text-slate-400",
+									children: "Max Value %"
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "mt-1.5 text-xs leading-relaxed text-slate-400",
+								children: "Kombinuje zápasy nad limit s nejvyšší kladnou odchylkou (Value %) oproti průměru trhu. Pod 45 % omezí na 1–2 zápasy."
+							})]
+						})]
+					})] }),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 						className: "border-t border-slate-800/80 pt-5",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-							className: "block text-sm font-semibold text-slate-100",
-							children: "Úroveň rizika"
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+									htmlFor: "min-prob-slider",
+									className: "inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Minimální pravděpodobnost zápasu" })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: "rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-sm font-bold tabular-nums text-emerald-300",
+									children: [minMatchProbability, " %"]
+								})]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+								id: "min-prob-slider",
+								type: "range",
+								min: 25,
+								max: 85,
+								step: 1,
+								value: minMatchProbability,
+								onChange: (e) => setMinMatchProbability(Number(e.target.value)),
+								className: "mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-1.5 flex items-center justify-between font-mono text-[11px] tabular-nums text-slate-500",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "25 %" }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: minMatchProbability < 45 ? "text-amber-400" : "",
+										children: "45 %"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: minMatchProbability === 55 ? "text-emerald-400" : "",
+										children: "55 % (výchozí)"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "85 %" })
+								]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-2.5 flex items-center justify-between text-xs text-slate-400",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zápasy splňující limit:" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: `font-mono font-semibold tabular-nums ${eligibleMatchesCount > 0 ? "text-emerald-300" : "text-rose-400"}`,
+									children: [
+										eligibleMatchesCount,
+										" z ",
+										matches.filter((m) => selectedSports.includes(m.sport)).length
+									]
+								})]
+							}),
+							isLowProbCapped && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-2.5 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TriangleAlert, { className: "mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Limit je pod 45 %: Chytrý Value tiket automaticky omezuje počet zápasů na max. 1–2 (sólo/double) pro ochranu šance na výhru." })]
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "border-t border-slate-800/80 pt-5",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+									htmlFor: "generator-budget",
+									className: "text-sm font-semibold text-slate-100",
+									children: "Váš rozpočet (Kč)"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => setBudget(Math.max(5, Math.round(currentBankroll))),
+									className: "text-xs font-medium text-emerald-400 hover:text-emerald-300",
+									children: [
+										"Použít bankroll (",
+										formatCZK(currentBankroll),
+										")"
+									]
+								})]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+								id: "generator-budget",
+								type: "number",
+								min: 5,
+								step: 5,
+								value: budget,
+								onChange: (e) => setBudget(Number(e.target.value)),
+								onBlur: () => setBudget((b) => Math.max(5, Math.round(b || 5))),
+								className: "mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								className: "mt-2 flex flex-wrap gap-1.5",
+								children: BUDGET_PRESETS.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									onClick: () => setBudget(preset),
+									className: `min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-xs tabular-nums transition-colors ${budget === preset ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200"}`,
+									children: formatCZK(preset)
+								}, preset))
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "border-t border-slate-800/80 pt-5",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex items-center justify-between gap-2",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "block text-sm font-semibold text-slate-100",
+								children: "Bankroll profil"
+							}), ticketStyle === "safe" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "text-[11px] text-slate-500",
+								children: "V bezpečném režimu vždy 2–3 zápasy"
+							})]
 						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-							className: "mt-2.5 space-y-2.5",
+							className: "mt-2.5 grid grid-cols-3 gap-2",
 							children: RISK_LEVELS.map((level) => {
 								const profile = RISK_PROFILES[level];
-								const active = riskLevel === level;
 								return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
 									onClick: () => setRiskLevel(level),
-									className: `w-full rounded-xl border p-3.5 text-left transition-colors ${active ? "border-emerald-500/60 bg-emerald-500/10" : "border-slate-800 bg-[#0B101B] hover:border-slate-700"}`,
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center justify-between",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: `font-display text-sm font-bold ${active ? "text-emerald-300" : "text-slate-100"}`,
-											children: profile.label
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "font-mono text-xs tabular-nums text-slate-400",
-											children: level === "Konzervativní" ? "Kurz 2.0–3.0" : level === "Vyvážený" ? "Kurz 3.5–6.0" : "Kurz 8.0+"
-										})]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "mt-1 text-xs text-slate-400",
-										children: profile.subtitle
+									className: `rounded-xl border px-2.5 py-2.5 text-center transition-colors ${riskLevel === level ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-300" : "border-slate-800 bg-[#0B101B] text-slate-300 hover:border-slate-700"}`,
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block font-display text-xs font-bold",
+										children: profile.label
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "mt-0.5 block font-mono text-[10px] tabular-nums text-slate-400",
+										children: [
+											"max ",
+											(profile.maxBankrollPct * 100).toFixed(1),
+											" % vklad"
+										]
 									})]
 								}, level);
 							})
@@ -14457,7 +14628,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 							className: "mt-2.5 grid grid-cols-2 gap-2",
 							children: ALL_SPORTS.map((sport) => {
 								const active = selectedSports.includes(sport);
-								const count = matches.filter((m) => m.sport === sport).length;
+								const count = matches.filter((m) => m.sport === sport && m.aiProbability >= minMatchProbability).length;
 								return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
 									onClick: () => toggleSport(sport),
@@ -14481,45 +14652,105 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 				className: "space-y-4 lg:col-span-7",
 				children: !generated ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "font-display text-lg font-semibold text-slate-200",
-						children: "Nedostatek zápasů pro vybrané sporty"
-					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "mt-1.5 text-sm text-slate-400",
-						children: "Zaškrtněte alespoň dva sporty s dostupnými zápasy pro sestavení tiketu."
-					})]
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							className: "font-display text-lg font-semibold text-slate-200",
+							children: [
+								"Žádný zápas nesplňuje minimální pravděpodobnost ",
+								minMatchProbability,
+								" %"
+							]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "mt-1.5 text-sm text-slate-400",
+							children: "Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu."
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "mt-5 flex flex-wrap items-center justify-center gap-3",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => setMinMatchProbability(55),
+								className: "inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
+								children: "Nastavit limit na 55 %"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => setSelectedSports([
+									"Fotbal",
+									"Hokej",
+									"Tenis",
+									"MMA"
+								]),
+								className: "inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
+								children: "Vybrat všechny sporty"
+							})]
+						})
+					]
 				}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "rounded-2xl border border-emerald-500/40 bg-[#111827] p-5 sm:p-6",
 					children: [
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "flex flex-col gap-3 border-b border-slate-800/80 pb-4 sm:flex-row sm:items-center sm:justify-between",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex items-center gap-2 text-xs text-emerald-400",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-									className: "font-semibold",
-									children: ["Optimální AI návrh · ", riskLevel]
-								})]
+								className: "flex flex-wrap items-center gap-2 text-xs text-emerald-400",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5" }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "font-semibold",
+										children: generated.style === "safe" ? "Bezpečný tiket (Nejnižší riziko)" : "Chytrý Value tiket"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "text-slate-600",
+										"aria-hidden": "true",
+										children: "·"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "font-mono tabular-nums text-slate-400",
+										children: [
+											"Limit ≥ ",
+											generated.minMatchProbability,
+											" %"
+										]
+									})
+								]
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", {
 								className: "mt-1 font-display text-xl font-bold text-slate-50",
 								children: [
 									"Sestavený tiket (",
 									generated.legs.length,
-									" příležitostí)"
+									" ",
+									generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů",
+									")"
 								]
-							})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-								type: "button",
-								onClick: () => handleGenerate(variationIndex + 1),
-								className: "inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 whitespace-nowrap shrink-0",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Jiná kombinace" })]
+							})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex flex-wrap items-center gap-2.5",
+								children: [riskBadgeStyle && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: `inline-flex min-h-[38px] items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold ${riskBadgeStyle.container} ${riskBadgeStyle.text}`,
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `h-2 w-2 rounded-full ${riskBadgeStyle.dot}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Riziko: ", generated.estimatedRisk] })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => handleGenerate(variationIndex + 1),
+									className: "inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 whitespace-nowrap shrink-0",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Jiná kombinace" })]
+								})]
 							})]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4",
+							className: "mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5",
 							children: [
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "block text-xs text-slate-400",
+										className: "block text-[11px] text-slate-400",
+										children: "Celková šance na výhru"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-1 block font-mono text-xl font-bold tabular-nums text-slate-50",
+										children: formatPercent(generated.totalProbability)
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-[11px] text-slate-400",
 										children: "Celkový kurz"
 									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 										className: "mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-400",
@@ -14529,17 +14760,17 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "block text-xs text-slate-400",
-										children: "Pravděpodobnost"
+										className: "block text-[11px] text-slate-400",
+										children: "Úroveň rizika"
 									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "mt-1 block font-mono text-xl font-bold tabular-nums text-slate-100",
-										children: formatPercent(generated.totalProbability)
+										className: `mt-1 block font-display text-lg font-bold ${riskBadgeStyle ? riskBadgeStyle.text : "text-slate-100"}`,
+										children: generated.estimatedRisk
 									})]
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "block text-xs text-slate-400",
+										className: "block text-[11px] text-slate-400",
 										children: "Doporučený vklad"
 									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 										className: "mt-1 block font-mono text-xl font-bold tabular-nums text-slate-100",
@@ -14547,9 +14778,9 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 									})]
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
+									className: "col-span-2 rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5 sm:col-span-1",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "block text-xs text-slate-400",
+										className: "block text-[11px] text-slate-400",
 										children: "Potenciální výhra"
 									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 										className: "mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-300",
@@ -14559,18 +14790,34 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 							]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "mt-3 flex items-start gap-2.5 rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5 text-xs text-slate-300",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-								generated.note,
-								" Bezpečný vklad tvoří",
-								" ",
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("strong", {
-									className: "font-mono tabular-nums text-slate-100",
-									children: [(generated.recommendedStake / Math.max(1, budget) * 100).toFixed(1), " %"]
-								}),
-								" ",
-								"zadaného rozpočtu."
-							] })]
+							className: "mt-3 space-y-2 rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5 text-xs text-slate-300",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-start gap-2.5",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+									generated.note,
+									" Bezpečný vklad tvoří",
+									" ",
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("strong", {
+										className: "font-mono tabular-nums text-slate-100",
+										children: [(generated.recommendedStake / Math.max(5, budget) * 100).toFixed(1), " %"]
+									}),
+									" ",
+									"rozpočtu."
+								] })]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "border-t border-slate-800/70 pt-2 font-mono text-[11px] tabular-nums text-slate-400",
+								children: [
+									"Výpočet šance tiketu (součin):",
+									" ",
+									generated.legs.map((l) => formatPercent(l.aiProbability)).join(" × "),
+									" =",
+									" ",
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "font-semibold text-slate-200",
+										children: formatPercent(generated.totalProbability)
+									})
+								]
+							})]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 							className: "mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
@@ -14618,8 +14865,8 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano })
 													children: leg.recommendedPick
 												}),
 												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-													className: "font-mono tabular-nums text-slate-400",
-													children: ["AI: ", formatPercent(leg.aiProbability)]
+													className: "font-mono tabular-nums text-slate-300",
+													children: ["Šance: ", formatPercent(leg.aiProbability)]
 												}),
 												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 													className: `font-mono tabular-nums ${leg.valueScore > 0 ? "text-emerald-400" : "text-slate-400"}`,

@@ -2,6 +2,8 @@ export type SportCategory = 'Fotbal' | 'Hokej' | 'Tenis' | 'MMA';
 export type SportFilter = 'Vše' | SportCategory;
 export type TimeWindow = 'Dnes' | 'Zítra' | 'Víkend';
 export type RiskLevel = 'Konzervativní' | 'Vyvážený' | 'Odvážný';
+export type TicketStyle = 'safe' | 'smart_value';
+export type EstimatedRiskBadge = 'Nízké' | 'Střední' | 'Vyšší';
 export type FormResult = 'V' | 'R' | 'P';
 export type TicketStatus = 'pending' | 'won' | 'lost';
 

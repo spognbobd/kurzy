@@ -1,4 +1,12 @@
-import { FormResult, MatchAnalysis, RiskLevel, SportCategory, TicketLeg } from '../types/betting';
+import {
+  EstimatedRiskBadge,
+  FormResult,
+  MatchAnalysis,
+  RiskLevel,
+  SportCategory,
+  TicketLeg,
+  TicketStyle,
+} from '../types/betting';
 
 export function formatCZK(value: number): string {
   return new Intl.NumberFormat('cs-CZ', {
@@ -199,9 +207,18 @@ export interface GeneratedTicketResult {
   legs: TicketLeg[];
   totalOdds: number;
   totalProbability: number;
+  estimatedRisk: EstimatedRiskBadge;
+  style: TicketStyle;
+  minMatchProbability: number;
   recommendedStake: number;
   potentialWin: number;
   note: string;
+}
+
+export function computeEstimatedRisk(totalProbabilityPct: number): EstimatedRiskBadge {
+  if (totalProbabilityPct >= 30) return 'Nízké';
+  if (totalProbabilityPct >= 15) return 'Střední';
+  return 'Vyšší';
 }
 
 function toLeg(m: MatchAnalysis): TicketLeg {
@@ -220,124 +237,162 @@ function toLeg(m: MatchAnalysis): TicketLeg {
   };
 }
 
+export interface GenerateTicketOptions {
+  ticketStyle?: TicketStyle;
+  minMatchProbability?: number;
+}
+
 /**
- * Generates an optimal ticket matching the selected risk profile & sports.
- * Supports variationIndex to rotate through top valid combinations.
+ * Generates an optimal ticket matching the selected ticket style, minimum match probability,
+ * risk profile, and sports. Supports variationIndex to rotate through top valid combinations.
  */
 export function generateOptimalTicket(
   matches: MatchAnalysis[],
   selectedSports: SportCategory[],
   riskLevel: RiskLevel,
   budget: number,
-  variationIndex = 0
+  variationIndex = 0,
+  options: GenerateTicketOptions = {}
 ): GeneratedTicketResult | null {
-  const pool = matches.filter((m) => selectedSports.includes(m.sport));
+  const ticketStyle: TicketStyle = options.ticketStyle ?? 'safe';
+  const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
+
+  const sportPool = matches.filter((m) => selectedSports.includes(m.sport));
+  const eligible = sportPool.filter((m) => m.aiProbability >= minMatchProbability);
+  if (eligible.length === 0) return null;
+
   const profile = RISK_PROFILES[riskLevel];
-  if (pool.length < 2) return null;
+  const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
 
-  // Score candidates according to risk preference
-  const sortedPool = [...pool].sort((a, b) => {
-    if (riskLevel === 'Konzervativní') {
-      const scoreA = a.aiProbability * 1.4 + a.valueScore * 2.5 - Math.abs(a.odds.betano - 1.5) * 10;
-      const scoreB = b.aiProbability * 1.4 + b.valueScore * 2.5 - Math.abs(b.odds.betano - 1.5) * 10;
-      return scoreB - scoreA;
-    }
-    if (riskLevel === 'Vyvážený') {
-      const scoreA = a.valueScore * 3.0 + a.aiProbability * 0.8;
-      const scoreB = b.valueScore * 3.0 + b.aiProbability * 0.8;
-      return scoreB - scoreA;
-    }
-    const scoreA = a.valueScore * 2.5 + a.odds.betano * 6 + a.aiProbability * 0.35;
-    const scoreB = b.valueScore * 2.5 + b.odds.betano * 6 + b.aiProbability * 0.35;
-    return scoreB - scoreA;
-  });
+  let candidatePool: MatchAnalysis[];
+  let minLegs: number;
+  let maxLegs: number;
 
-  // Cap search pool to top 14 candidates for instant deterministic combination search
-  const candidates = sortedPool.slice(0, 14);
+  if (ticketStyle === 'safe') {
+    // Safe ticket: max 2-3 matches with highest win probability and best market odds
+    candidatePool = [...eligible].sort((a, b) => {
+      const marketEdgeA = ((a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg)) * 100;
+      const marketEdgeB = ((b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg)) * 100;
+      const scoreA = a.aiProbability * 2.5 + marketEdgeA * 1.8 + Math.max(0, a.valueScore) * 1.1;
+      const scoreB = b.aiProbability * 2.5 + marketEdgeB * 1.8 + Math.max(0, b.valueScore) * 1.1;
+      return scoreB - scoreA;
+    });
+    minLegs = Math.min(2, candidatePool.length);
+    maxLegs = Math.min(3, candidatePool.length);
+  } else {
+    // Smart Value ticket: prioritize positive Value % against market average above minMatchProbability
+    const positiveEligible = eligible.filter((m) => m.valueScore > 0);
+    const basePool = positiveEligible.length > 0 ? positiveEligible : eligible;
+
+    candidatePool = [...basePool].sort((a, b) => {
+      const marketEdgeA = ((a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg)) * 100;
+      const marketEdgeB = ((b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg)) * 100;
+      const scoreA = a.valueScore * 3.2 + marketEdgeA * 1.5 + a.aiProbability * 0.45;
+      const scoreB = b.valueScore * 3.2 + marketEdgeB * 1.5 + b.aiProbability * 0.45;
+      return scoreB - scoreA;
+    });
+
+    if (isLowProbCapped) {
+      // Automatic solo/double limit when minimum probability is below 45 %
+      minLegs = 1;
+      maxLegs = Math.min(2, candidatePool.length);
+    } else {
+      minLegs = Math.min(2, candidatePool.length);
+      const riskCap = riskLevel === 'Konzervativní' ? 3 : riskLevel === 'Vyvážený' ? 4 : 5;
+      maxLegs = Math.min(riskCap, candidatePool.length);
+    }
+  }
+
+  const candidates = candidatePool.slice(0, 14);
   const validCombos: { legs: MatchAnalysis[]; totalOdds: number; jointProb: number; score: number }[] = [];
 
-  const targetMid = (profile.minOdds + profile.maxOdds) / 2;
-
   function backtrack(start: number, current: MatchAnalysis[], currentOdds: number) {
-    if (current.length >= profile.minLegs && current.length <= profile.maxLegs) {
-      const inRange =
-        riskLevel === 'Odvážný'
-          ? currentOdds >= profile.minOdds
-          : currentOdds >= profile.minOdds && currentOdds <= profile.maxOdds;
+    if (current.length >= minLegs && current.length <= maxLegs) {
+      const jointProb = current.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100;
+      const avgValue = current.reduce((acc, m) => acc + m.valueScore, 0) / current.length;
+      const avgMarketDiff =
+        current.reduce(
+          (acc, m) => acc + ((m.odds.betano - m.odds.marketAvg) / Math.max(1, m.odds.marketAvg)) * 100,
+          0
+        ) / current.length;
 
-      if (inRange) {
-        const jointProb = current.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100;
-        const avgValue = current.reduce((acc, m) => acc + m.valueScore, 0) / current.length;
-        const distPenalty =
-          riskLevel === 'Odvážný'
-            ? Math.max(0, currentOdds - 22) * 0.5
-            : Math.abs(currentOdds - targetMid) * 4;
-        const comboScore = avgValue * 3 + jointProb * 0.9 - distPenalty;
-        validCombos.push({
-          legs: [...current],
-          totalOdds: Number(currentOdds.toFixed(2)),
-          jointProb: Number(jointProb.toFixed(1)),
-          score: comboScore,
-        });
+      let comboScore: number;
+      if (ticketStyle === 'safe') {
+        // Maximize joint win probability and best market odds, keeping low risk
+        comboScore = jointProb * 2.4 + avgMarketDiff * 1.8 + Math.max(0, avgValue) * 1.2;
+      } else {
+        // Smart Value: maximize positive edge while keeping sensible joint probability
+        const targetMid = (profile.minOdds + profile.maxOdds) / 2;
+        const oddsDistancePenalty = isLowProbCapped ? 0 : Math.abs(currentOdds - targetMid) * 1.25;
+        comboScore = avgValue * 3.4 + avgMarketDiff * 1.5 + jointProb * 0.8 - oddsDistancePenalty;
       }
+
+      validCombos.push({
+        legs: [...current],
+        totalOdds: Number(currentOdds.toFixed(2)),
+        jointProb: Number(jointProb.toFixed(1)),
+        score: comboScore,
+      });
     }
 
-    if (current.length === profile.maxLegs || validCombos.length > 220) return;
+    if (current.length === maxLegs || validCombos.length > 240) return;
 
     for (let i = start; i < candidates.length; i++) {
       const next = candidates[i];
-      const nextOdds = currentOdds * next.odds.betano;
-      if (riskLevel !== 'Odvážný' && nextOdds > profile.maxOdds * 1.15) continue;
       current.push(next);
-      backtrack(i + 1, current, nextOdds);
+      backtrack(i + 1, current, currentOdds * next.odds.betano);
       current.pop();
     }
   }
 
   backtrack(0, [], 1);
 
-  if (validCombos.length > 0) {
-    validCombos.sort((a, b) => b.score - a.score);
-    const chosen = validCombos[variationIndex % Math.min(validCombos.length, 6)];
-    const legs = chosen.legs.map(toLeg);
-    const recommendedStake = calculateSafeStake(budget, chosen.totalOdds, chosen.jointProb, riskLevel);
-    return {
-      legs,
-      totalOdds: chosen.totalOdds,
-      totalProbability: chosen.jointProb,
-      recommendedStake,
-      potentialWin: Math.round(recommendedStake * chosen.totalOdds),
-      note: `Optimální kombinace ${legs.length} zápasů pro profil ${riskLevel} s průměrným Value skóre +${(
-        legs.reduce((s, l) => s + l.valueScore, 0) / legs.length
-      ).toFixed(1)} %.`,
-    };
+  validCombos.sort((a, b) => b.score - a.score);
+  const chosen =
+    validCombos.length > 0
+      ? validCombos[variationIndex % Math.min(validCombos.length, 6)]
+      : {
+          legs: candidates.slice(0, Math.max(1, minLegs)),
+          totalOdds: Number(
+            candidates
+              .slice(0, Math.max(1, minLegs))
+              .reduce((acc, m) => acc * m.odds.betano, 1)
+              .toFixed(2)
+          ),
+          jointProb: Number(
+            (
+              candidates
+                .slice(0, Math.max(1, minLegs))
+                .reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100
+            ).toFixed(1)
+          ),
+          score: 0,
+        };
+
+  const legs = chosen.legs.map(toLeg);
+  const effectiveRiskForStake: RiskLevel = ticketStyle === 'safe' ? 'Konzervativní' : riskLevel;
+  const recommendedStake = calculateSafeStake(budget, chosen.totalOdds, chosen.jointProb, effectiveRiskForStake);
+  const estimatedRisk = computeEstimatedRisk(chosen.jointProb);
+  const avgValue = legs.reduce((s, l) => s + l.valueScore, 0) / legs.length;
+
+  let note: string;
+  if (ticketStyle === 'safe') {
+    note = `Bezpečný tiket (${legs.length} ${legs.length === 1 ? 'zápas' : legs.length <= 4 ? 'zápasy' : 'zápasů'}) s nejvyšší pravděpodobností výhry nad ${minMatchProbability} % a nejlepším kurzem na trhu.`;
+  } else if (isLowProbCapped) {
+    note = `Chytrý Value tiket automaticky omezen na ${legs.length === 1 ? 'sólo (1 zápas)' : 'double (2 zápasy)'}, protože minimální pravděpodobnost je pod 45 % (průměrné Value ${formatPercent(avgValue, true)}).`;
+  } else {
+    note = `Chytrý Value tiket kombinující ${legs.length} ${legs.length <= 4 ? 'zápasy' : 'zápasů'} nad ${minMatchProbability} % s průměrným Value ${formatPercent(avgValue, true)} oproti trhu.`;
   }
-
-  // Fallback greedy builder if selected sports subset has fewer tight odds matches
-  const desiredCount = Math.min(candidates.length, Math.max(2, profile.minLegs));
-  const offset = variationIndex % Math.max(1, candidates.length - desiredCount + 1);
-  const picked = candidates.slice(offset, offset + desiredCount);
-  let totalOdds = picked.reduce((acc, m) => acc * m.odds.betano, 1);
-
-  for (let i = 0; i < candidates.length && picked.length < profile.maxLegs; i++) {
-    const c = candidates[i];
-    if (picked.some((p) => p.id === c.id)) continue;
-    if (totalOdds < profile.minOdds) {
-      picked.push(c);
-      totalOdds *= c.odds.betano;
-    }
-  }
-
-  const finalOdds = Number(totalOdds.toFixed(2));
-  const jointProb = Number((picked.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100).toFixed(1));
-  const recommendedStake = calculateSafeStake(budget, finalOdds, jointProb, riskLevel);
 
   return {
-    legs: picked.map(toLeg),
-    totalOdds: finalOdds,
-    totalProbability: jointProb,
+    legs,
+    totalOdds: chosen.totalOdds,
+    totalProbability: chosen.jointProb,
+    estimatedRisk,
+    style: ticketStyle,
+    minMatchProbability,
     recommendedStake,
-    potentialWin: Math.round(recommendedStake * finalOdds),
-    note: `Nejlepší dostupná kombinace ${picked.length} zápasů pro vybrané sporty (${selectedSports.join(', ')}).`,
+    potentialWin: Math.round(recommendedStake * chosen.totalOdds),
+    note,
   };
 }
