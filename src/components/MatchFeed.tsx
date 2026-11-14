@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpDown,
   Check,
+  ChevronDown,
   ExternalLink,
   Plus,
   PlusCircle,
@@ -10,6 +11,7 @@ import {
   SlidersHorizontal,
   Trash2,
   TrendingUp,
+  X,
 } from 'lucide-react';
 import {
   FormResult,
@@ -51,6 +53,31 @@ const SPORT_FILTERS: SportFilter[] = [
 ];
 const TIME_WINDOWS: (TimeWindow | 'Vše')[] = ['Dnes', 'Zítra', 'Víkend', 'Vše'];
 
+type SortMode = 'probability' | 'value' | 'kickoff' | 'lowest_odds';
+
+const SORT_OPTIONS: { id: SortMode; label: string; description: string }[] = [
+  {
+    id: 'probability',
+    label: 'Nejvyšší pravděpodobnost',
+    description: 'AI šance % od nejvyšší po nejnižší · bezpeční favorité',
+  },
+  {
+    id: 'value',
+    label: 'Nejvyšší Value',
+    description: '+EV % od nejvyššího po nejnižší',
+  },
+  {
+    id: 'kickoff',
+    label: 'Čas výkopu',
+    description: 'Od nejbližších nadcházejících zápasů',
+  },
+  {
+    id: 'lowest_odds',
+    label: 'Nejnižší kurz',
+    description: 'Od největších favoritů s kurzem blízko 1.00',
+  },
+];
+
 function FormSequence({ label, form }: { label: string; form: FormResult[] }) {
   return (
     <div className="flex items-center justify-between gap-2 text-xs">
@@ -91,8 +118,31 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   const [sportFilter, setSportFilter] = useState<SportFilter>('Vše');
   const [timeWindow, setTimeWindow] = useState<TimeWindow | 'Vše'>('Dnes');
   const [onlyValueBets, setOnlyValueBets] = useState(false);
-  const [sortByValue, setSortByValue] = useState(true);
+  const [sortMode, setSortMode] = useState<SortMode>('value');
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const sortContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isSortMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsSortMenuOpen(false);
+    };
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        sortContainerRef.current &&
+        !sortContainerRef.current.contains(e.target as Node)
+      ) {
+        setIsSortMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isSortMenuOpen]);
 
   const summaryStats = useMemo(() => {
     const positive = matches.filter((m) => m.valueScore > 0);
@@ -122,11 +172,28 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
       return true;
     });
 
-    if (sortByValue) {
-      return [...list].sort((a, b) => b.valueScore - a.valueScore);
+    const copy = [...list];
+    switch (sortMode) {
+      case 'probability':
+        return copy.sort(
+          (a, b) => b.aiProbability - a.aiProbability || b.valueScore - a.valueScore
+        );
+      case 'value':
+        return copy.sort(
+          (a, b) => b.valueScore - a.valueScore || b.aiProbability - a.aiProbability
+        );
+      case 'lowest_odds':
+        return copy.sort(
+          (a, b) => a.odds.betano - b.odds.betano || b.aiProbability - a.aiProbability
+        );
+      case 'kickoff':
+      default:
+        return copy.sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
     }
-    return [...list].sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
-  }, [matches, sportFilter, timeWindow, onlyValueBets, sortByValue, searchQuery]);
+  }, [matches, sportFilter, timeWindow, onlyValueBets, sortMode, searchQuery]);
+
+  const activeSortOption =
+    SORT_OPTIONS.find((opt) => opt.id === sortMode) ?? SORT_OPTIONS[1];
 
   return (
     <div className="space-y-6">
@@ -301,14 +368,98 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               <span>Jen pozitivní Value (+EV)</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setSortByValue((s) => !s)}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap shrink-0"
-            >
-              <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" />
-              <span>{sortByValue ? 'Řazeno: Nejvyšší Value' : 'Řazeno: Čas výkopu'}</span>
-            </button>
+            <div ref={sortContainerRef} className="relative">
+              <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={isSortMenuOpen}
+                onClick={() => setIsSortMenuOpen((open) => !open)}
+                className={`inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  isSortMenuOpen
+                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
+                    : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                }`}
+              >
+                <ArrowUpDown className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Řazeno: {activeSortOption.label}</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 text-slate-400 transition-transform ${
+                    isSortMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+
+              {isSortMenuOpen && (
+                <>
+                  {/* Mobile backdrop */}
+                  <div
+                    className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs sm:hidden"
+                    onClick={() => setIsSortMenuOpen(false)}
+                    aria-hidden="true"
+                  />
+
+                  {/* Responsive menu: bottom sheet on mobile, anchored dropdown on desktop */}
+                  <div
+                    role="listbox"
+                    aria-label="Způsob řazení zápasů"
+                    className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-slate-800 bg-[#111827] p-4 pb-6 shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 sm:rounded-2xl sm:border sm:p-2"
+                  >
+                    <div className="mb-3 flex items-center justify-between border-b border-slate-800/80 pb-2.5 sm:hidden">
+                      <span className="font-display text-sm font-bold text-slate-100">
+                        Seřadit zápasy podle
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsSortMenuOpen(false)}
+                        aria-label="Zavřít nabídku řazení"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-100"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-1">
+                      {SORT_OPTIONS.map((option) => {
+                        const active = sortMode === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            onClick={() => {
+                              setSortMode(option.id);
+                              setIsSortMenuOpen(false);
+                            }}
+                            className={`flex w-full items-start justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${
+                              active
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                                : 'border-transparent bg-transparent text-slate-300 hover:border-slate-800 hover:bg-[#090D16]'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <span
+                                className={`block text-xs font-semibold ${
+                                  active ? 'text-emerald-300' : 'text-slate-100'
+                                }`}
+                              >
+                                {option.label}
+                              </span>
+                              <span className="mt-0.5 block text-[11px] leading-snug text-slate-400">
+                                {option.description}
+                              </span>
+                            </div>
+                            {active && (
+                              <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </section>

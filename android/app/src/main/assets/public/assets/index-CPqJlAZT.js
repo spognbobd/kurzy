@@ -13402,6 +13402,16 @@ var Check = createLucideIcon("check", [["path", {
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var ChevronDown = createLucideIcon("chevron-down", [["path", {
+	d: "m6 9 6 6 6-6",
+	key: "qrunsl"
+}]]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var CircleCheck = createLucideIcon("circle-check", [["circle", {
 	cx: "12",
 	cy: "12",
@@ -14182,6 +14192,28 @@ var TIME_WINDOWS = [
 	"Víkend",
 	"Vše"
 ];
+var SORT_OPTIONS = [
+	{
+		id: "probability",
+		label: "Nejvyšší pravděpodobnost",
+		description: "AI šance % od nejvyšší po nejnižší · bezpeční favorité"
+	},
+	{
+		id: "value",
+		label: "Nejvyšší Value",
+		description: "+EV % od nejvyššího po nejnižší"
+	},
+	{
+		id: "kickoff",
+		label: "Čas výkopu",
+		description: "Od nejbližších nadcházejících zápasů"
+	},
+	{
+		id: "lowest_odds",
+		label: "Nejnižší kurz",
+		description: "Od největších favoritů s kurzem blízko 1.00"
+	}
+];
 function FormSequence({ label, form }) {
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "flex items-center justify-between gap-2 text-xs",
@@ -14202,8 +14234,25 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 	const [sportFilter, setSportFilter] = (0, import_react.useState)("Vše");
 	const [timeWindow, setTimeWindow] = (0, import_react.useState)("Dnes");
 	const [onlyValueBets, setOnlyValueBets] = (0, import_react.useState)(false);
-	const [sortByValue, setSortByValue] = (0, import_react.useState)(true);
+	const [sortMode, setSortMode] = (0, import_react.useState)("value");
+	const [isSortMenuOpen, setIsSortMenuOpen] = (0, import_react.useState)(false);
 	const [searchQuery, setSearchQuery] = (0, import_react.useState)("");
+	const sortContainerRef = (0, import_react.useRef)(null);
+	(0, import_react.useEffect)(() => {
+		if (!isSortMenuOpen) return;
+		const handleKeyDown = (e) => {
+			if (e.key === "Escape") setIsSortMenuOpen(false);
+		};
+		const handleClickOutside = (e) => {
+			if (sortContainerRef.current && !sortContainerRef.current.contains(e.target)) setIsSortMenuOpen(false);
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		document.addEventListener("mousedown", handleClickOutside);
+		return () => {
+			window.removeEventListener("keydown", handleKeyDown);
+			document.removeEventListener("mousedown", handleClickOutside);
+		};
+	}, [isSortMenuOpen]);
 	const summaryStats = (0, import_react.useMemo)(() => {
 		const positive = matches.filter((m) => m.valueScore > 0);
 		const maxVal = positive.length > 0 ? Math.max(...positive.map((m) => m.valueScore)) : 0;
@@ -14217,7 +14266,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 	}, [matches]);
 	const filteredMatches = (0, import_react.useMemo)(() => {
 		const q = searchQuery.trim().toLowerCase();
-		const list = matches.filter((m) => {
+		const copy = [...matches.filter((m) => {
 			if (sportFilter !== "Vše" && m.sport !== sportFilter) return false;
 			if (timeWindow !== "Vše" && m.timeWindow !== timeWindow) return false;
 			if (onlyValueBets && m.valueScore <= 0) return false;
@@ -14225,17 +14274,22 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 				if (!`${m.homeTeam} ${m.awayTeam} ${m.league} ${m.recommendedPick}`.toLowerCase().includes(q)) return false;
 			}
 			return true;
-		});
-		if (sortByValue) return [...list].sort((a, b) => b.valueScore - a.valueScore);
-		return [...list].sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
+		})];
+		switch (sortMode) {
+			case "probability": return copy.sort((a, b) => b.aiProbability - a.aiProbability || b.valueScore - a.valueScore);
+			case "value": return copy.sort((a, b) => b.valueScore - a.valueScore || b.aiProbability - a.aiProbability);
+			case "lowest_odds": return copy.sort((a, b) => a.odds.betano - b.odds.betano || b.aiProbability - a.aiProbability);
+			default: return copy.sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
+		}
 	}, [
 		matches,
 		sportFilter,
 		timeWindow,
 		onlyValueBets,
-		sortByValue,
+		sortMode,
 		searchQuery
 	]);
+	const activeSortOption = SORT_OPTIONS.find((opt) => opt.id === sortMode) ?? SORT_OPTIONS[1];
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "space-y-6",
 		children: [
@@ -14391,11 +14445,67 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 							onClick: () => setOnlyValueBets((v) => !v),
 							className: `inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${onlyValueBets ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700"}`,
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TrendingUp, { className: "h-3.5 w-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Jen pozitivní Value (+EV)" })]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: () => setSortByValue((s) => !s),
-							className: "inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowUpDown, { className: "h-3.5 w-3.5 text-slate-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: sortByValue ? "Řazeno: Nejvyšší Value" : "Řazeno: Čas výkopu" })]
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							ref: sortContainerRef,
+							className: "relative",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								"aria-haspopup": "listbox",
+								"aria-expanded": isSortMenuOpen,
+								onClick: () => setIsSortMenuOpen((open) => !open),
+								className: `inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${isSortMenuOpen ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100"}`,
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowUpDown, { className: "h-3.5 w-3.5 text-emerald-400" }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Řazeno: ", activeSortOption.label] }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: `h-3.5 w-3.5 text-slate-400 transition-transform ${isSortMenuOpen ? "rotate-180" : ""}` })
+								]
+							}), isSortMenuOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								className: "fixed inset-0 z-40 bg-black/60 backdrop-blur-xs sm:hidden",
+								onClick: () => setIsSortMenuOpen(false),
+								"aria-hidden": "true"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								role: "listbox",
+								"aria-label": "Způsob řazení zápasů",
+								className: "fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-slate-800 bg-[#111827] p-4 pb-6 shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 sm:rounded-2xl sm:border sm:p-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "mb-3 flex items-center justify-between border-b border-slate-800/80 pb-2.5 sm:hidden",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "font-display text-sm font-bold text-slate-100",
+										children: "Seřadit zápasy podle"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => setIsSortMenuOpen(false),
+										"aria-label": "Zavřít nabídku řazení",
+										className: "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-100",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "h-4 w-4" })
+									})]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "space-y-1",
+									children: SORT_OPTIONS.map((option) => {
+										const active = sortMode === option.id;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											role: "option",
+											"aria-selected": active,
+											onClick: () => {
+												setSortMode(option.id);
+												setIsSortMenuOpen(false);
+											},
+											className: `flex w-full items-start justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${active ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200" : "border-transparent bg-transparent text-slate-300 hover:border-slate-800 hover:bg-[#090D16]"}`,
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "min-w-0",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: `block text-xs font-semibold ${active ? "text-emerald-300" : "text-slate-100"}`,
+													children: option.label
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "mt-0.5 block text-[11px] leading-snug text-slate-400",
+													children: option.description
+												})]
+											}), active && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-400" })]
+										}, option.id);
+									})
+								})]
+							})] })]
 						})]
 					})]
 				})]
