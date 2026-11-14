@@ -133,34 +133,45 @@ function scoreBasketballLeague(s: OddsApiSport): number {
   return 40;
 }
 
+function scoreTennisTournament(s: OddsApiSport): number {
+  const text = `${s.key} ${s.title}`.toLowerCase();
+  let score = 40;
+  if (text.includes('atp')) score += 30;
+  else if (text.includes('wta')) score += 25;
+  if (!text.includes('doubles')) score += 20;
+  return score;
+}
+
 function selectActiveCompetitions(allSports: OddsApiSport[]): {
   selected: Array<{ sport: OddsApiSport; category: SportCategory }>;
   categoryByKey: Map<string, SportCategory>;
 } {
   const activeMatchSports = allSports.filter((s) => s.active && !s.has_outrights);
 
+  // Max 5 competitions total (1 per sport = max 5 credits per manual refresh)
   const soccer = activeMatchSports
     .filter((s) => s.group === 'Soccer')
     .sort((a, b) => scoreSoccerLeague(b) - scoreSoccerLeague(a))
-    .slice(0, 5);
+    .slice(0, 1);
 
   const hockey = activeMatchSports
     .filter((s) => s.group === 'Ice Hockey')
-    .sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a));
+    .sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a))
+    .slice(0, 1);
 
-  const allTennis = activeMatchSports.filter((s) => s.group === 'Tennis');
-  const atpWtaTennis = allTennis.filter((s) => {
-    const text = `${s.key} ${s.title}`.toLowerCase();
-    return text.includes('atp') || text.includes('wta');
-  });
-  const tennis = atpWtaTennis.length > 0 ? atpWtaTennis : allTennis;
+  const tennis = activeMatchSports
+    .filter((s) => s.group === 'Tennis')
+    .sort((a, b) => scoreTennisTournament(b) - scoreTennisTournament(a))
+    .slice(0, 1);
 
-  const mma = activeMatchSports.filter((s) => s.group === 'Mixed Martial Arts');
+  const mma = activeMatchSports
+    .filter((s) => s.group === 'Mixed Martial Arts')
+    .slice(0, 1);
 
   const basketball = activeMatchSports
     .filter((s) => s.group === 'Basketball')
     .sort((a, b) => scoreBasketballLeague(b) - scoreBasketballLeague(a))
-    .slice(0, 4);
+    .slice(0, 1);
 
   const selected: Array<{ sport: OddsApiSport; category: SportCategory }> = [
     ...soccer.map((sport) => ({ sport, category: 'Fotbal' as const })),
@@ -424,7 +435,15 @@ export async function fetchLiveOddsAndStats(
       continue;
     }
     const quota = r.headers.get('x-requests-remaining');
-    if (quota) remainingQuota = quota;
+    if (quota) {
+      const parsedQuota = Number(quota);
+      const currentQuota = remainingQuota !== null ? Number(remainingQuota) : Number.POSITIVE_INFINITY;
+      if (Number.isFinite(parsedQuota) && parsedQuota <= currentQuota) {
+        remainingQuota = quota;
+      } else if (remainingQuota === null) {
+        remainingQuota = quota;
+      }
+    }
     const data = (await r.json()) as OddsApiEvent[];
     if (Array.isArray(data)) {
       data.forEach((ev) => {

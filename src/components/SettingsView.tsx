@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Check,
+  Clock,
   Database,
   KeyRound,
   RefreshCw,
@@ -8,15 +9,18 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { AppSettings } from '../types/betting';
+import { formatUpdateTimeLabel } from '../utils/analyticsEngine';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface SettingsViewProps {
   settings: AppSettings;
   onUpdateSettings: (next: AppSettings) => void;
-  onFetchLiveData: (oddsKey: string, sportsKey: string) => Promise<void>;
+  onFetchLiveData: (oddsKey: string, sportsKey: string, force?: boolean) => Promise<void>;
   isLoadingLive: boolean;
   liveStatusMessage: string | null;
   liveError: string | null;
+  lastUpdatedAt: number | null;
+  remainingQuota: string | null;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -26,6 +30,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isLoadingLive,
   liveStatusMessage,
   liveError,
+  lastUpdatedAt,
+  remainingQuota,
 }) => {
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
@@ -56,8 +62,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
 
-    if (!demoMode) {
-      await onFetchLiveData(trimmedOdds, trimmedSports);
+    if (!demoMode && trimmedOdds !== settings.theOddsApiKey.trim()) {
+      await onFetchLiveData(trimmedOdds, trimmedSports, false);
     }
   };
 
@@ -73,8 +79,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       demoMode: false,
       initialBankroll: safeBankroll,
     });
-    await onFetchLiveData(trimmedOdds, trimmedSports);
+    await onFetchLiveData(trimmedOdds, trimmedSports, true);
   };
+
+  const parsedQuota = remainingQuota !== null ? Number(remainingQuota) : null;
+  const quotaTone =
+    parsedQuota === null || !Number.isFinite(parsedQuota)
+      ? 'border-slate-700 bg-[#090D16] text-slate-300'
+      : parsedQuota < 20
+      ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+      : parsedQuota < 80
+      ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
+  const lastUpdateLabel = formatUpdateTimeLabel(lastUpdatedAt);
 
   return (
     <div className="space-y-6">
@@ -147,11 +164,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {/* The Odds API Key */}
           <div>
-            <label htmlFor="odds-api-key" className="block text-sm font-semibold text-slate-100">
-              The Odds API klíč (aktuální kurzy)
-            </label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="odds-api-key" className="block text-sm font-semibold text-slate-100">
+                The Odds API klíč (aktuální kurzy)
+              </label>
+              <span
+                className={`inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold tabular-nums ${quotaTone}`}
+              >
+                {remainingQuota !== null
+                  ? `Zbývá kreditů: ${remainingQuota}`
+                  : 'Zbývá kreditů: —'}
+              </span>
+            </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              Slouží ke stahování živých kurzů evropských a světových sázkových kanceláří.
+              Stahuje max. 5 hlavních soutěží (1 za sport, trh h2h) = max. 5 kreditů na ruční aktualizaci. Mezipaměť platí 60 minut.
             </p>
             <input
               id="odds-api-key"
@@ -200,6 +226,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             />
           </div>
 
+          {lastUpdateLabel && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-[#0B101B] px-4 py-2.5 text-xs text-slate-300">
+              <span className="inline-flex items-center gap-2">
+                <Clock className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="font-mono tabular-nums">{lastUpdateLabel}</span>
+              </span>
+              <span className="text-[11px] text-slate-400">Cache 60 min (0 kreditů při obnovení)</span>
+            </div>
+          )}
+
           {liveError && (
             <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
               {liveError}
@@ -237,7 +273,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               className="inline-flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
             >
               <RefreshCw className={`h-4 w-4 text-emerald-400 ${isLoadingLive ? 'animate-spin' : ''}`} />
-              <span>{isLoadingLive ? 'Stahuji kurzy...' : 'Načíst živé kurzy z API'}</span>
+              <span>{isLoadingLive ? 'Stahuji kurzy...' : 'Aktualizovat kurzy z API'}</span>
             </button>
           </div>
         </form>

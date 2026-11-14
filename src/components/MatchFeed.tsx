@@ -23,6 +23,7 @@ import {
   BETANO_HOME_URL,
   formatOdds,
   formatPercent,
+  formatUpdateTimeLabel,
 } from '../utils/analyticsEngine';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -34,6 +35,7 @@ interface MatchFeedProps {
   isDemoMode: boolean;
   isLoadingLive: boolean;
   liveError: string | null;
+  lastUpdatedAt: number | null;
   onRefreshLive: () => void;
   onOpenSettings: () => void;
   onOpenCustomMatchModal: () => void;
@@ -110,6 +112,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   isDemoMode,
   isLoadingLive,
   liveError,
+  lastUpdatedAt,
   onRefreshLive,
   onOpenSettings,
   onOpenCustomMatchModal,
@@ -202,6 +205,14 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
             <span>{isDemoMode ? 'Demo režim s ukázkovými daty' : 'Živá data The Odds API'}</span>
+            {!isDemoMode && lastUpdatedAt && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums text-emerald-300">
+                  {formatUpdateTimeLabel(lastUpdatedAt)}
+                </span>
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>Porovnání Betano, Tipsport a průměru trhu</span>
           </div>
@@ -228,7 +239,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0"
             >
               <RefreshCw className={`h-4 w-4 text-emerald-400 ${isLoadingLive ? 'animate-spin' : ''}`} />
-              <span>{isLoadingLive ? 'Načítám kurzy...' : 'Obnovit kurzy'}</span>
+              <span>{isLoadingLive ? 'Stahuji kurzy...' : 'Aktualizovat kurzy z API'}</span>
             </button>
           ) : (
             <button

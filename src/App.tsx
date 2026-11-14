@@ -20,14 +20,35 @@ const DEFAULT_SETTINGS: AppSettings = {
   initialBankroll: 10000,
 };
 
+const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
+
+interface OddsCache {
+  matches: MatchAnalysis[];
+  fetchedAt: number;
+  remainingQuota: string | null;
+  keyFingerprint: string;
+}
+
+function getKeyFingerprint(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  if (!trimmed) return '';
+  return `${trimmed.slice(0, 4)}:${trimmed.length}`;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('matches');
   const [settings, setSettings] = useLocalStorage<AppSettings>('betedge_settings_v1', DEFAULT_SETTINGS);
   const [tickets, setTickets] = useLocalStorage<Ticket[]>('betedge_tickets_v1', INITIAL_DEMO_TICKETS);
   const [slipMatchIds, setSlipMatchIds] = useLocalStorage<string[]>('betedge_slip_v1', []);
   const [customMatches, setCustomMatches] = useLocalStorage<MatchAnalysis[]>('betedge_custom_matches_v1', []);
+  const [oddsCache, setOddsCache] = useLocalStorage<OddsCache | null>('betedge_odds_cache_v1', null);
 
-  const [liveMatches, setLiveMatches] = useState<MatchAnalysis[] | null>(null);
+  const [liveMatches, setLiveMatches] = useState<MatchAnalysis[] | null>(() => {
+    if (!settings.demoMode && oddsCache && Array.isArray(oddsCache.matches) && oddsCache.matches.length > 0) {
+      return oddsCache.matches;
+    }
+    return null;
+  });
   const [isLoadingLive, setIsLoadingLive] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null);
@@ -36,6 +57,8 @@ export default function App() {
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const lastAttemptedKeyRef = useRef<string | null>(null);
+  const oddsCacheRef = useRef<OddsCache | null>(oddsCache);
+  oddsCacheRef.current = oddsCache;
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -52,38 +75,70 @@ export default function App() {
     [showToast]
   );
 
-  const handleFetchLiveData = useCallback(async (oddsKey: string, sportsKey: string) => {
-    const trimmedOdds = oddsKey.trim();
-    const trimmedSports = sportsKey.trim();
-    lastAttemptedKeyRef.current = `${trimmedOdds}::${trimmedSports}`;
+  const handleFetchLiveData = useCallback(
+    async (oddsKey: string, sportsKey: string, force = false) => {
+      const trimmedOdds = oddsKey.trim();
+      const trimmedSports = sportsKey.trim();
+      lastAttemptedKeyRef.current = `${trimmedOdds}::${trimmedSports}`;
 
-    if (!trimmedOdds) {
-      setLiveMatches(null);
-      setLiveStatusMessage(null);
-      setLiveError('Chybí API klíč pro The Odds API. Zadejte klíč v Nastavení nebo zapněte Demo režim.');
-      return;
-    }
-
-    setIsLoadingLive(true);
-    setLiveError(null);
-    setLiveStatusMessage(null);
-    try {
-      const result = await fetchLiveOddsAndStats(trimmedOdds, trimmedSports);
-      setLiveMatches(result.matches);
-      const quotaNote = result.remainingQuota ? ` · zbývá ${result.remainingQuota} dotazů` : '';
-      setLiveStatusMessage(`Načteno ${result.matches.length} aktuálních zápasů z The Odds API${quotaNote}.`);
-      if (result.apiSportsWarning) {
-        setLiveError(`Poznámka z API-Sports: ${result.apiSportsWarning}`);
+      if (!trimmedOdds) {
+        setLiveMatches(null);
+        setLiveStatusMessage(null);
+        setLiveError('Chybí API klíč pro The Odds API. Zadejte klíč v Nastavení nebo zapněte Demo režim.');
+        return;
       }
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Nepodařilo se stáhnout kurzy z The Odds API.';
-      setLiveMatches(null);
-      setLiveError(message);
-    } finally {
-      setIsLoadingLive(false);
-    }
-  }, []);
+
+      const fp = getKeyFingerprint(trimmedOdds);
+      const cached = oddsCacheRef.current;
+      const isCacheFresh =
+        !force &&
+        cached !== null &&
+        cached.keyFingerprint === fp &&
+        Array.isArray(cached.matches) &&
+        cached.matches.length > 0 &&
+        Date.now() - cached.fetchedAt < CACHE_TTL_MS;
+
+      if (isCacheFresh) {
+        setLiveMatches(cached.matches);
+        setLiveError(null);
+        const quotaNote = cached.remainingQuota ? ` · zbývá ${cached.remainingQuota} kreditů` : '';
+        setLiveStatusMessage(
+          `Načteno z mezipaměti (${cached.matches.length} zápasů · 0 kreditů)${quotaNote}.`
+        );
+        return;
+      }
+
+      setIsLoadingLive(true);
+      setLiveError(null);
+      setLiveStatusMessage(null);
+      try {
+        const result = await fetchLiveOddsAndStats(trimmedOdds, trimmedSports);
+        const now = Date.now();
+        setLiveMatches(result.matches);
+        setOddsCache({
+          matches: result.matches,
+          fetchedAt: now,
+          remainingQuota: result.remainingQuota ?? cached?.remainingQuota ?? null,
+          keyFingerprint: fp,
+        });
+        const quotaNote = result.remainingQuota ? ` · zbývá ${result.remainingQuota} kreditů` : '';
+        setLiveStatusMessage(
+          `Načteno ${result.matches.length} aktuálních zápasů z The Odds API${quotaNote}.`
+        );
+        if (result.apiSportsWarning) {
+          setLiveError(`Poznámka z API-Sports: ${result.apiSportsWarning}`);
+        }
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Nepodařilo se stáhnout kurzy z The Odds API.';
+        setLiveMatches(cached?.keyFingerprint === fp ? cached.matches : null);
+        setLiveError(message);
+      } finally {
+        setIsLoadingLive(false);
+      }
+    },
+    [setOddsCache]
+  );
 
   useEffect(() => {
     if (settings.demoMode) {
@@ -92,7 +147,7 @@ export default function App() {
     }
     const configKey = `${settings.theOddsApiKey.trim()}::${settings.apiSportsKey.trim()}`;
     if (lastAttemptedKeyRef.current !== configKey) {
-      void handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey);
+      void handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey, false);
     }
   }, [settings.demoMode, settings.theOddsApiKey, settings.apiSportsKey, handleFetchLiveData]);
 
@@ -182,7 +237,8 @@ export default function App() {
             isDemoMode={settings.demoMode}
             isLoadingLive={isLoadingLive}
             liveError={liveError}
-            onRefreshLive={() => handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey)}
+            lastUpdatedAt={oddsCache?.fetchedAt ?? null}
+            onRefreshLive={() => handleFetchLiveData(settings.theOddsApiKey, settings.apiSportsKey, true)}
             onOpenSettings={() => setActiveTab('settings')}
             onOpenCustomMatchModal={() => setIsCustomModalOpen(true)}
             onDeleteCustomMatch={handleDeleteCustomMatch}
@@ -226,6 +282,8 @@ export default function App() {
             isLoadingLive={isLoadingLive}
             liveStatusMessage={liveStatusMessage}
             liveError={liveError}
+            lastUpdatedAt={oddsCache?.fetchedAt ?? null}
+            remainingQuota={oddsCache?.remainingQuota ?? null}
           />
         )}
       </main>

@@ -4,6 +4,7 @@ import {
   BookmarkCheck,
   Check,
   ExternalLink,
+  Flame,
   Layers,
   PlusCircle,
   RefreshCw,
@@ -27,8 +28,6 @@ import {
   formatOdds,
   formatPercent,
   generateOptimalTicket,
-  GeneratedTicketResult,
-  RISK_PROFILES,
 } from '../utils/analyticsEngine';
 
 interface TicketGeneratorProps {
@@ -50,8 +49,48 @@ const ALL_SPORTS: SportCategory[] = [
   'Šipky',
   'Ostatní',
 ];
-const RISK_LEVELS: RiskLevel[] = ['Konzervativní', 'Vyvážený', 'Odvážný'];
 const BUDGET_PRESETS = [5, 50, 200, 1000, 5000];
+
+const TICKET_MODES: {
+  id: TicketStyle;
+  title: string;
+  legsLabel: string;
+  stakeHint: string;
+  description: string;
+  riskLabel: RiskLevel;
+  icon: typeof ShieldCheck;
+}[] = [
+  {
+    id: 'safe',
+    title: 'Jistota (Konzervativní)',
+    legsLabel: '1–2 zápasy',
+    stakeHint: 'Vklad cca 10 % (min. 10 Kč)',
+    description:
+      'Vybere 1 až 2 zápasy s nejvyšší pravděpodobností výhry a nejnižším rizikem prohry.',
+    riskLabel: 'Konzervativní',
+    icon: ShieldCheck,
+  },
+  {
+    id: 'smart_value',
+    title: 'Vyvážený (Smart Value)',
+    legsLabel: '2–3 zápasy',
+    stakeHint: 'Vklad cca 7 % (min. 10 Kč)',
+    description:
+      'Kombinuje dobrou pravděpodobnost nad zvolený limit s kladnou hodnotou kurzu (+EV).',
+    riskLabel: 'Vyvážený',
+    icon: TrendingUp,
+  },
+  {
+    id: 'bold',
+    title: 'Odvážný (Vyšší kurz)',
+    legsLabel: '3–4 zápasy',
+    stakeHint: 'Vklad cca 5 % (min. 5 Kč)',
+    description:
+      'Vybere 3 až 4 zápasy s nejvyšším celkovým kurzem a nejvyšší odchylkou Value %.',
+    riskLabel: 'Odvážný',
+    icon: Flame,
+  },
+];
 
 const RISK_BADGE_STYLES: Record<EstimatedRiskBadge, { container: string; text: string; dot: string }> = {
   Nízké: {
@@ -98,16 +137,32 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [budget, setBudget] = useState<number>(Math.max(5, Math.round(currentBankroll)));
   const [ticketStyle, setTicketStyle] = useState<TicketStyle>('safe');
   const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
-  const [riskLevel, setRiskLevel] = useState<RiskLevel>('Vyvážený');
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(ALL_SPORTS);
   const [variationIndex, setVariationIndex] = useState(0);
-  const [generated, setGenerated] = useState<GeneratedTicketResult | null>(null);
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
+    setVariationIndex(0);
+    setSavedFeedback(false);
   }, [matchesSignature, recommendedMinProb]);
+
+  const safeBudget = Math.max(5, Math.round(budget || 5));
+
+  const generated = useMemo(
+    () =>
+      generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
+        minMatchProbability,
+      }),
+    [matches, selectedSports, ticketStyle, safeBudget, variationIndex, minMatchProbability]
+  );
+
+  useEffect(() => {
+    if (generated) {
+      setCustomStake(generated.recommendedStake);
+    }
+  }, [generated]);
 
   const eligibleMatchesCount = useMemo(
     () =>
@@ -117,55 +172,53 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     [matches, selectedSports, minMatchProbability]
   );
 
-  useEffect(() => {
-    const safeBudget = Math.max(5, budget || 5);
-    const next = generateOptimalTicket(matches, selectedSports, riskLevel, safeBudget, 0, {
-      ticketStyle,
-      minMatchProbability,
-    });
-    setVariationIndex(0);
-    setGenerated(next);
-    setSavedFeedback(false);
-    if (next) {
-      setCustomStake(next.recommendedStake);
-    }
-  }, [matches, selectedSports, riskLevel, budget, ticketStyle, minMatchProbability]);
-
   const toggleSport = (sport: SportCategory) => {
     setSelectedSports((prev) => {
       if (prev.includes(sport)) {
-        if (prev.length === 1) return prev; // keep at least one sport selected
+        if (prev.length === 1) return prev;
         return prev.filter((s) => s !== sport);
       }
       return [...prev, sport];
     });
+    setVariationIndex(0);
+    setSavedFeedback(false);
   };
 
-  const handleGenerate = (nextVariation = 0) => {
-    const safeBudget = Math.max(5, budget || 5);
-    const res = generateOptimalTicket(matches, selectedSports, riskLevel, safeBudget, nextVariation, {
-      ticketStyle,
+  const handleSelectStyle = (nextStyle: TicketStyle) => {
+    setTicketStyle(nextStyle);
+    setVariationIndex(0);
+    setSavedFeedback(false);
+  };
+
+  const handleGenerateClick = () => {
+    const normalizedBudget = Math.max(5, Math.round(budget || 5));
+    setBudget(normalizedBudget);
+    setVariationIndex(0);
+    setSavedFeedback(false);
+    const fresh = generateOptimalTicket(matches, selectedSports, ticketStyle, normalizedBudget, 0, {
       minMatchProbability,
     });
-    setVariationIndex(nextVariation);
-    setGenerated(res);
-    setSavedFeedback(false);
-    if (res) {
-      setCustomStake(res.recommendedStake);
+    if (fresh) {
+      setCustomStake(fresh.recommendedStake);
     }
+  };
+
+  const handleNextVariation = () => {
+    setVariationIndex((prev) => prev + 1);
+    setSavedFeedback(false);
   };
 
   const handleSave = () => {
     if (!generated) return;
     const stake = Math.max(5, Math.round(customStake || generated.recommendedStake));
-    const styleTitle = generated.style === 'safe' ? 'Bezpečný' : 'Chytrý Value';
+    const activeMode = TICKET_MODES.find((m) => m.id === generated.style) ?? TICKET_MODES[0];
     const ticket: Ticket = {
       id: `tkt-${Date.now()}`,
       createdAt: new Date().toISOString(),
-      label: `${styleTitle} AI tiket (${generated.legs.length} ${
+      label: `${activeMode.title} (${generated.legs.length} ${
         generated.legs.length === 1 ? 'zápas' : generated.legs.length <= 4 ? 'zápasy' : 'zápasů'
       })`,
-      riskLevel: generated.style === 'safe' ? 'Konzervativní' : riskLevel,
+      riskLevel: activeMode.riskLabel,
       legs: generated.legs,
       totalOdds: generated.totalOdds,
       totalProbability: generated.totalProbability,
@@ -180,11 +233,16 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(true);
   };
 
-  const activeStake = Math.max(5, customStake || (generated?.recommendedStake ?? 5));
+  const activeMode = TICKET_MODES.find((m) => m.id === ticketStyle) ?? TICKET_MODES[0];
+  const activeStake = Math.max(5, Math.round(customStake || (generated?.recommendedStake ?? 5)));
   const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
   const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
   const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
   const customMatches = useMemo(() => matches.filter((m) => m.isCustom), [matches]);
+  const comboIndexLabel =
+    generated && generated.availableCombosCount > 1
+      ? ` (${(variationIndex % generated.availableCombosCount) + 1}/${generated.availableCombosCount})`
+      : '';
 
   return (
     <div className="space-y-6">
@@ -208,67 +266,56 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
         </button>
       </div>
 
+      {/* Unified 3-Card Mode Selector (3 karty vedle sebe) */}
+      <section aria-label="Výběr stylu tiketu" className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {TICKET_MODES.map((mode) => {
+          const Icon = mode.icon;
+          const active = ticketStyle === mode.id;
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => handleSelectStyle(mode.id)}
+              aria-pressed={active}
+              className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition-colors ${
+                active
+                  ? 'border-emerald-500/70 bg-emerald-500/12 shadow-lg shadow-emerald-950/20'
+                  : 'border-slate-800/90 bg-[#111827] hover:border-slate-700'
+              }`}
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`inline-flex items-center gap-2 font-display text-sm font-bold ${
+                      active ? 'text-emerald-300' : 'text-slate-100'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span>{mode.title}</span>
+                  </span>
+                  <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-300">
+                    {mode.legsLabel}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-slate-400">{mode.description}</p>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px]">
+                <span className="font-mono font-medium tabular-nums text-slate-300">
+                  {mode.stakeHint}
+                </span>
+                {active && <span className="font-semibold text-emerald-400">Aktivní režim</span>}
+              </div>
+            </button>
+          );
+        })}
+      </section>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
         {/* Left Configurator Panel */}
         <section className="space-y-5 rounded-2xl border border-slate-800/90 bg-[#111827] p-5 lg:col-span-5">
-          {/* Ticket Style Switcher */}
-          <div>
-            <span className="block text-sm font-semibold text-slate-100">Styl tiketu</span>
-            <div className="mt-2.5 grid grid-cols-1 gap-2.5">
-              <button
-                type="button"
-                onClick={() => setTicketStyle('safe')}
-                className={`w-full rounded-xl border p-3.5 text-left transition-colors ${
-                  ticketStyle === 'safe'
-                    ? 'border-emerald-500/60 bg-emerald-500/10'
-                    : 'border-slate-800 bg-[#0B101B] hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`inline-flex items-center gap-2 font-display text-sm font-bold ${
-                      ticketStyle === 'safe' ? 'text-emerald-300' : 'text-slate-100'
-                    }`}
-                  >
-                    <ShieldCheck className="h-4 w-4 shrink-0" />
-                    <span>Bezpečný tiket (Nejnižší riziko)</span>
-                  </span>
-                  <span className="font-mono text-[11px] tabular-nums text-slate-400">2–3 zápasy</span>
-                </div>
-                <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
-                  Vybere max. 2–3 zápasy s nejvyšší pravděpodobností výhry nad zvolený limit a nejlepším kurzem na trhu.
-                </p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTicketStyle('smart_value')}
-                className={`w-full rounded-xl border p-3.5 text-left transition-colors ${
-                  ticketStyle === 'smart_value'
-                    ? 'border-emerald-500/60 bg-emerald-500/10'
-                    : 'border-slate-800 bg-[#0B101B] hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`inline-flex items-center gap-2 font-display text-sm font-bold ${
-                      ticketStyle === 'smart_value' ? 'text-emerald-300' : 'text-slate-100'
-                    }`}
-                  >
-                    <TrendingUp className="h-4 w-4 shrink-0" />
-                    <span>Chytrý Value tiket</span>
-                  </span>
-                  <span className="font-mono text-[11px] tabular-nums text-slate-400">Max Value %</span>
-                </div>
-                <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
-                  Kombinuje zápasy nad limit s nejvyšší kladnou odchylkou (Value %) oproti průměru trhu. Pod 45 % omezí na 1–2 zápasy.
-                </p>
-              </button>
-            </div>
-          </div>
-
           {/* Minimum Match Probability Slider */}
-          <div className="border-t border-slate-800/80 pt-5">
+          <div>
             <div className="flex items-center justify-between gap-2">
               <label
                 htmlFor="min-prob-slider"
@@ -289,7 +336,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               max={85}
               step={1}
               value={minMatchProbability}
-              onChange={(e) => setMinMatchProbability(Number(e.target.value))}
+              onChange={(e) => {
+                setMinMatchProbability(Number(e.target.value));
+                setVariationIndex(0);
+                setSavedFeedback(false);
+              }}
               className="mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
             />
 
@@ -298,9 +349,15 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <span className={minMatchProbability < 45 ? 'text-amber-400' : ''}>45 %</span>
               <button
                 type="button"
-                onClick={() => setMinMatchProbability(recommendedMinProb)}
+                onClick={() => {
+                  setMinMatchProbability(recommendedMinProb);
+                  setVariationIndex(0);
+                  setSavedFeedback(false);
+                }}
                 className={`transition-colors hover:text-emerald-300 ${
-                  minMatchProbability === recommendedMinProb ? 'text-emerald-400 font-semibold' : 'text-slate-400'
+                  minMatchProbability === recommendedMinProb
+                    ? 'text-emerald-400 font-semibold'
+                    : 'text-slate-400'
                 }`}
               >
                 Auto: {recommendedMinProb} % (min. 3 zápasy)
@@ -323,7 +380,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <div className="mt-2.5 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
                 <span>
-                  Limit je pod 45 %: Chytrý Value tiket automaticky omezuje počet zápasů na max. 1–2 (sólo/double) pro ochranu šance na výhru.
+                  Limit je pod 45 %: režim Vyvážený automaticky omezuje počet zápasů na max. 1–2 (sólo/double).
                 </span>
               </div>
             )}
@@ -337,7 +394,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               </label>
               <button
                 type="button"
-                onClick={() => setBudget(Math.max(5, Math.round(currentBankroll)))}
+                onClick={() => {
+                  setBudget(Math.max(5, Math.round(currentBankroll)));
+                  setSavedFeedback(false);
+                }}
                 className="text-xs font-medium text-emerald-400 hover:text-emerald-300"
               >
                 Použít bankroll ({formatCZK(currentBankroll)})
@@ -349,7 +409,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               min={5}
               step={5}
               value={budget}
-              onChange={(e) => setBudget(Number(e.target.value))}
+              onChange={(e) => {
+                setBudget(Number(e.target.value));
+                setSavedFeedback(false);
+              }}
               onBlur={() => setBudget((b) => Math.max(5, Math.round(b || 5)))}
               className="mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
             />
@@ -358,7 +421,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 <button
                   key={preset}
                   type="button"
-                  onClick={() => setBudget(preset)}
+                  onClick={() => {
+                    setBudget(preset);
+                    setSavedFeedback(false);
+                  }}
                   className={`min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-xs tabular-nums transition-colors ${
                     budget === preset
                       ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
@@ -368,39 +434,6 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   {formatCZK(preset)}
                 </button>
               ))}
-            </div>
-          </div>
-
-          {/* Risk Level Selection (guides bankroll stake & Smart Value leg count when >= 45%) */}
-          <div className="border-t border-slate-800/80 pt-5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="block text-sm font-semibold text-slate-100">Bankroll profil</span>
-              {ticketStyle === 'safe' && (
-                <span className="text-[11px] text-slate-500">V bezpečném režimu vždy 2–3 zápasy</span>
-              )}
-            </div>
-            <div className="mt-2.5 grid grid-cols-3 gap-2">
-              {RISK_LEVELS.map((level) => {
-                const profile = RISK_PROFILES[level];
-                const active = riskLevel === level;
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => setRiskLevel(level)}
-                    className={`rounded-xl border px-2.5 py-2.5 text-center transition-colors ${
-                      active
-                        ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-300'
-                        : 'border-slate-800 bg-[#0B101B] text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    <span className="block font-display text-xs font-bold">{profile.label}</span>
-                    <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-400">
-                      max {(profile.maxBankrollPct * 100).toFixed(1)} % vklad
-                    </span>
-                  </button>
-                );
-              })}
             </div>
           </div>
 
@@ -435,7 +468,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           {/* Primary Generate Button */}
           <button
             type="button"
-            onClick={() => handleGenerate(0)}
+            onClick={handleGenerateClick}
             className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400"
           >
             <Layers className="h-4 w-4 shrink-0" />
@@ -489,14 +522,20 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setMinMatchProbability(recommendedMinProb)}
+                  onClick={() => {
+                    setMinMatchProbability(recommendedMinProb);
+                    setVariationIndex(0);
+                  }}
                   className="inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                 >
                   Nastavit doporučený limit ({recommendedMinProb} %)
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedSports(ALL_SPORTS)}
+                  onClick={() => {
+                    setSelectedSports(ALL_SPORTS);
+                    setVariationIndex(0);
+                  }}
                   className="inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                 >
                   Vybrat všechny sporty
@@ -510,11 +549,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 <div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-400">
                     <Sparkles className="h-3.5 w-3.5" />
-                    <span className="font-semibold">
-                      {generated.style === 'safe'
-                        ? 'Bezpečný tiket (Nejnižší riziko)'
-                        : 'Chytrý Value tiket'}
-                    </span>
+                    <span className="font-semibold">{activeMode.title}</span>
                     <span className="text-slate-600" aria-hidden="true">·</span>
                     <span className="font-mono tabular-nums text-slate-400">
                       Limit ≥ {generated.minMatchProbability} %
@@ -543,11 +578,17 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => handleGenerate(variationIndex + 1)}
-                    className="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 whitespace-nowrap shrink-0"
+                    onClick={handleNextVariation}
+                    disabled={generated.availableCombosCount <= 1}
+                    title={
+                      generated.availableCombosCount <= 1
+                        ? 'Pro tento filtr není dostupná jiná kombinace'
+                        : 'Vybrat jinou kombinaci zápasů'
+                    }
+                    className="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap shrink-0"
                   >
                     <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Jiná kombinace</span>
+                    <span>Jiná kombinace{comboIndexLabel}</span>
                   </button>
                 </div>
               </div>
@@ -599,9 +640,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 <div className="flex items-start gap-2.5">
                   <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
                   <span>
-                    {generated.note} Bezpečný vklad tvoří{' '}
+                    {generated.note} Doporučený vklad tvoří{' '}
                     <strong className="font-mono tabular-nums text-slate-100">
-                      {((generated.recommendedStake / Math.max(5, budget)) * 100).toFixed(1)} %
+                      {((generated.recommendedStake / safeBudget) * 100).toFixed(1)} %
                     </strong>{' '}
                     rozpočtu.
                   </span>
@@ -723,4 +764,3 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     </div>
   );
 };
-
