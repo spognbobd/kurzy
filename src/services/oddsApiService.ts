@@ -55,136 +55,144 @@ function mapSportGroupOrKey(group: string, sportKey: string, sportTitle: string)
   return 'Fotbal';
 }
 
-function mapLeagueName(sportTitle: string): string {
+function mapLeagueName(sportKey: string, sportTitle: string): string {
+  const key = sportKey.toLowerCase();
   const lower = sportTitle.toLowerCase();
-  if (lower.includes('epl') || lower.includes('premier league')) return 'Premier League';
-  if (lower.includes('champions league')) return 'Liga mistrů';
-  if (lower.includes('europa league')) return 'Evropská liga';
-  if (lower.includes('nhl')) return 'NHL';
-  if (lower.includes('nba')) return 'NBA';
-  if (lower.includes('euroleague')) return 'Euroliga';
-  if (lower.includes('ufc') || lower.includes('mma')) return 'UFC / MMA';
+  if (key === 'soccer_epl' || lower.includes('premier league')) return 'Premier League';
+  if (key === 'soccer_spain_la_liga' || lower.includes('la liga')) return 'La Liga';
+  if (key === 'soccer_germany_bundesliga') return 'Bundesliga';
+  if (key === 'soccer_italy_serie_a') return 'Serie A';
+  if (key === 'soccer_france_ligue_one') return 'Ligue 1';
+  if (key === 'soccer_uefa_champs_league' || lower.includes('champions league')) return 'Liga mistrů';
+  if (key.startsWith('soccer_czech')) return 'Chance Liga';
+  if (key === 'icehockey_nhl' || lower.includes('nhl')) return 'NHL';
+  if (key.startsWith('icehockey_czech')) return 'Tipsport Extraliga';
+  if (key === 'basketball_nba' || lower === 'nba') return 'NBA';
+  if (key.startsWith('basketball_czech')) return 'Česká NBL';
+  if (key === 'mma_mixed_martial_arts' || key.includes('ufc') || lower.includes('ufc')) return 'UFC';
   return sportTitle;
 }
 
-function scoreSoccerLeague(s: OddsApiSport): number {
-  const text = `${s.key} ${s.title} ${s.description}`.toLowerCase();
-  if (
-    text.includes('world_cup') ||
-    text.includes('nations_league') ||
-    text.includes('euro') ||
-    text.includes('qualif') ||
-    text.includes('friendly') ||
-    text.includes('conmebol') ||
-    text.includes('concacaf') ||
-    text.includes('afcon') ||
-    text.includes('copa_america')
-  ) {
-    return 100;
-  }
-  if (
-    text.includes('uefa_champs') ||
-    text.includes('uefa_europa') ||
-    text.includes('soccer_epl') ||
-    text.includes('spain_la_liga') ||
-    text.includes('germany_bundesliga') ||
-    text.includes('italy_serie_a') ||
-    text.includes('france_ligue_one') ||
-    text.includes('czech')
-  ) {
-    return 90;
-  }
-  if (
-    text.includes('efl_champ') ||
-    text.includes('bundesliga2') ||
-    text.includes('segunda') ||
-    text.includes('serie_b') ||
-    text.includes('ligue_two') ||
-    text.includes('eredivisie') ||
-    text.includes('primeira') ||
-    text.includes('poland') ||
-    text.includes('austria') ||
-    text.includes('switzerland') ||
-    text.includes('spl')
-  ) {
-    return 70;
-  }
-  return 40;
+const BLOCKED_GENERAL_REGEX =
+  /\b(ncaa|ncaab|ncaaf|ncaaw|wncaab|college|varsity|friendly|friendlies|exhibition|preseason|pre season|summer league|all star|u19|u20|u21|u23|reserve|reserves|youth|amateur)\b/i;
+
+const BLOCKED_LOWER_DIVISION_REGEX =
+  /\b(2|ii|2nd|second|third|fourth|bundesliga 2|bundesliga2|la liga 2|segunda|serie b|serie c|ligue 2|ligue two|efl|championship|league one|league two|national league|vanarama|eerste divisie|erste liga|fnl|narodni liga|ahl|echl|ohl|whl|qmjhl|ushl|mestis|allsvenskan|hockeyallsvenskan|maxa liga|eurocup|gleague|g league|wnba|qualif|qualification|qualifiers|women|womens|frauen|femenina|wsl|nwsl)\b/i;
+
+const BLOCKED_TENNIS_REGEX =
+  /\b(doubles|mixed|challenger|itf|utr|exhibition|qualif|qualification|qualifiers|juniors|wheelchair)\b/i;
+
+const BLOCKED_MMA_REGEX =
+  /\b(ksw|oktagon|bellator|pfl|one championship|one fc|cage warriors|lfa|invicta|aca|fen|clout|fame|bkfc|bare knuckle|rizin|pancrase|brave|ares|eagle fc|regional)\b/i;
+
+function normalizeCompetitionText(s: Pick<OddsApiSport, 'key' | 'title'>): string {
+  return `${s.key} ${s.title}`
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
 }
 
-function scoreHockeyLeague(s: OddsApiSport): number {
-  const text = `${s.key} ${s.title}`.toLowerCase();
-  if (text.includes('nhl') || text.includes('czech') || text.includes('extraliga')) return 100;
-  if (text.includes('liiga') || text.includes('shl') || text.includes('sweden') || text.includes('finland')) {
-    return 85;
-  }
-  if (text.includes('ahl') || text.includes('mestis') || text.includes('allsvenskan') || text.includes('khl')) {
-    return 70;
-  }
-  return 45;
-}
+function classifyMainCompetition(
+  s: OddsApiSport
+): { category: SportCategory; priority: number } | null {
+  if (!s.active || s.has_outrights) return null;
 
-function scoreBasketballLeague(s: OddsApiSport): number {
-  const text = `${s.key} ${s.title}`.toLowerCase();
-  if (text.includes('basketball_nba') || s.title.toUpperCase() === 'NBA') return 100;
-  if (text.includes('euroleague')) return 95;
-  if (text.includes('eurocup')) return 75;
-  if (text.includes('acb') || text.includes('ncaab') || text.includes('wnba') || text.includes('nbl')) return 60;
-  return 40;
-}
+  const key = s.key.toLowerCase();
+  const normalized = normalizeCompetitionText(s);
 
-function scoreTennisTournament(s: OddsApiSport): number {
-  const text = `${s.key} ${s.title}`.toLowerCase();
-  let score = 40;
-  if (text.includes('atp')) score += 30;
-  else if (text.includes('wta')) score += 25;
-  if (!text.includes('doubles')) score += 20;
-  return score;
+  if (BLOCKED_GENERAL_REGEX.test(normalized)) {
+    return null;
+  }
+
+  if (s.group === 'Soccer') {
+    if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+    if (key === 'soccer_uefa_champs_league') return { category: 'Fotbal', priority: 100 };
+    if (key === 'soccer_epl') return { category: 'Fotbal', priority: 95 };
+    if (key.startsWith('soccer_czech')) return { category: 'Fotbal', priority: 92 };
+    if (key === 'soccer_spain_la_liga') return { category: 'Fotbal', priority: 90 };
+    if (key === 'soccer_germany_bundesliga') return { category: 'Fotbal', priority: 88 };
+    if (key === 'soccer_italy_serie_a') return { category: 'Fotbal', priority: 86 };
+    if (key === 'soccer_france_ligue_one') return { category: 'Fotbal', priority: 84 };
+    return null;
+  }
+
+  if (s.group === 'Ice Hockey') {
+    if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+    if (key === 'icehockey_nhl') return { category: 'Hokej', priority: 100 };
+    if (key.startsWith('icehockey_czech') && !/\b1 liga\b/i.test(normalized)) {
+      return { category: 'Hokej', priority: 95 };
+    }
+    return null;
+  }
+
+  if (s.group === 'Basketball') {
+    if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+    if (key === 'basketball_nba') return { category: 'Basketbal', priority: 100 };
+    if (key.startsWith('basketball_czech')) return { category: 'Basketbal', priority: 90 };
+    return null;
+  }
+
+  if (s.group === 'Tennis') {
+    if (BLOCKED_TENNIS_REGEX.test(normalized)) return null;
+    const isAtp = key.startsWith('tennis_atp_');
+    const isWta = key.startsWith('tennis_wta_');
+    if (!isAtp && !isWta) return null;
+
+    const isGrandSlam =
+      key.includes('aus_open') ||
+      key.includes('french_open') ||
+      key.includes('roland_garros') ||
+      key.includes('wimbledon') ||
+      key.includes('us_open');
+    const priority = (isGrandSlam ? 100 : 80) + (isAtp ? 10 : 5);
+    return { category: 'Tenis', priority };
+  }
+
+  if (s.group === 'Mixed Martial Arts') {
+    if (BLOCKED_MMA_REGEX.test(normalized)) return null;
+    const isUfc = key.includes('ufc') || /\bufc\b/i.test(normalized);
+    if (key === 'mma_mixed_martial_arts' || isUfc) {
+      return { category: 'MMA', priority: isUfc ? 100 : 90 };
+    }
+    return null;
+  }
+
+  return null;
 }
 
 function selectActiveCompetitions(allSports: OddsApiSport[]): {
   selected: Array<{ sport: OddsApiSport; category: SportCategory }>;
   categoryByKey: Map<string, SportCategory>;
 } {
-  const activeMatchSports = allSports.filter((s) => s.active && !s.has_outrights);
+  // Keep strictly 1 top active allowed competition per sport (max 5 credits per manual refresh)
+  const bestByCategory = new Map<
+    SportCategory,
+    { sport: OddsApiSport; category: SportCategory; priority: number }
+  >();
 
-  // Max 5 competitions total (1 per sport = max 5 credits per manual refresh)
-  const soccer = activeMatchSports
-    .filter((s) => s.group === 'Soccer')
-    .sort((a, b) => scoreSoccerLeague(b) - scoreSoccerLeague(a))
-    .slice(0, 1);
+  for (const sport of allSports) {
+    const match = classifyMainCompetition(sport);
+    if (!match) continue;
+    const existing = bestByCategory.get(match.category);
+    if (!existing || match.priority > existing.priority) {
+      bestByCategory.set(match.category, {
+        sport,
+        category: match.category,
+        priority: match.priority,
+      });
+    }
+  }
 
-  const hockey = activeMatchSports
-    .filter((s) => s.group === 'Ice Hockey')
-    .sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a))
-    .slice(0, 1);
-
-  const tennis = activeMatchSports
-    .filter((s) => s.group === 'Tennis')
-    .sort((a, b) => scoreTennisTournament(b) - scoreTennisTournament(a))
-    .slice(0, 1);
-
-  const mma = activeMatchSports
-    .filter((s) => s.group === 'Mixed Martial Arts')
-    .slice(0, 1);
-
-  const basketball = activeMatchSports
-    .filter((s) => s.group === 'Basketball')
-    .sort((a, b) => scoreBasketballLeague(b) - scoreBasketballLeague(a))
-    .slice(0, 1);
-
-  const selected: Array<{ sport: OddsApiSport; category: SportCategory }> = [
-    ...soccer.map((sport) => ({ sport, category: 'Fotbal' as const })),
-    ...hockey.map((sport) => ({ sport, category: 'Hokej' as const })),
-    ...tennis.map((sport) => ({ sport, category: 'Tenis' as const })),
-    ...mma.map((sport) => ({ sport, category: 'MMA' as const })),
-    ...basketball.map((sport) => ({ sport, category: 'Basketbal' as const })),
-  ];
-
+  const orderedCategories: SportCategory[] = ['Fotbal', 'Hokej', 'Tenis', 'MMA', 'Basketbal'];
+  const selected: Array<{ sport: OddsApiSport; category: SportCategory }> = [];
   const categoryByKey = new Map<string, SportCategory>();
-  selected.forEach(({ sport, category }) => {
-    categoryByKey.set(sport.key, category);
-  });
+
+  for (const cat of orderedCategories) {
+    const entry = bestByCategory.get(cat);
+    if (entry) {
+      selected.push({ sport: entry.sport, category: entry.category });
+      categoryByKey.set(entry.sport.key, entry.category);
+    }
+  }
 
   return { selected, categoryByKey };
 }
@@ -405,7 +413,7 @@ export async function fetchLiveOddsAndStats(
   const { selected: activeCompetitions, categoryByKey } = selectActiveCompetitions(allSports);
   if (activeCompetitions.length === 0) {
     throw new Error(
-      'V The Odds API momentálně nejsou aktivní žádné soutěže pro Fotbal, Hokej, Tenis, MMA ani Basketbal.'
+      'V The Odds API momentálně nejsou aktivní žádné hlavní soutěže pro Betano (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga mistrů, české ligy, NHL, NBA, ATP/WTA, UFC).'
     );
   }
 
@@ -484,7 +492,15 @@ export async function fetchLiveOddsAndStats(
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     const sport = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey('', ev.sport_key, ev.sport_title);
-    const league = mapLeagueName(ev.sport_title);
+    const evNormalized = `${ev.sport_key} ${ev.sport_title}`.toLowerCase().replace(/[_-]+/g, ' ');
+    if (
+      BLOCKED_GENERAL_REGEX.test(evNormalized) ||
+      (sport === 'MMA' && BLOCKED_MMA_REGEX.test(evNormalized)) ||
+      (sport === 'Tenis' && BLOCKED_TENNIS_REGEX.test(evNormalized))
+    ) {
+      continue;
+    }
+    const league = mapLeagueName(ev.sport_key, ev.sport_title);
     const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
 
     // Collect home and away odds across bookmakers

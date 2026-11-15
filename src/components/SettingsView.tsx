@@ -177,7 +177,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              Stahuje max. 5 hlavních soutěží (1 za sport, trh h2h) = max. 5 kreditů na ruční aktualizaci. Mezipaměť platí 60 minut.
+              Stahuje výhradně hlavní soutěže dostupné na Betanu (regions=eu, trh h2h, max. 5 kreditů na ruční aktualizaci). Mezipaměť platí 60 minut.
             </p>
             <input
               id="odds-api-key"

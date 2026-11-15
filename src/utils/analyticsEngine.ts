@@ -384,7 +384,9 @@ export function generateOptimalTicket(
   const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
 
   const sportPool = matches.filter((m) => selectedSports.includes(m.sport));
-  const eligible = sportPool.filter((m) => m.aiProbability >= minMatchProbability);
+  const eligible = sportPool.filter(
+    (m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0
+  );
   if (eligible.length === 0) return null;
 
   const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
@@ -394,7 +396,7 @@ export function generateOptimalTicket(
   let maxLegs: number;
 
   if (ticketStyle === 'safe') {
-    // Jistota (Konzervativní): 1-2 matches with highest win probability
+    // Jistota (Konzervativní): 1-2 matches with highest win probability (Value >= 0.0 %)
     candidatePool = [...eligible].sort((a, b) => {
       const marketEdgeA = ((a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg)) * 100;
       const marketEdgeB = ((b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg)) * 100;
@@ -405,7 +407,7 @@ export function generateOptimalTicket(
     minLegs = 1;
     maxLegs = Math.min(2, candidatePool.length);
   } else if (ticketStyle === 'smart_value') {
-    // Vyvážený (Smart Value): 2-3 matches combining good probability and positive Value %
+    // Vyvážený (Smart Value): 2-3 matches combining good probability and non-negative Value % (never < 0.0 %)
     const positiveEligible = eligible.filter((m) => m.valueScore > 0);
     const basePool = positiveEligible.length >= 2 ? positiveEligible : eligible;
 

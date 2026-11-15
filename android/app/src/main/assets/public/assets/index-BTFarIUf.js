@@ -11855,7 +11855,7 @@ function toLeg(m) {
 */
 function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, variationIndex = 0, options = {}) {
 	const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
-	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability);
+	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0);
 	if (eligible.length === 0) return null;
 	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
 	let candidatePool;
@@ -12847,80 +12847,143 @@ function mapSportGroupOrKey(group, sportKey, sportTitle) {
 	if (s.includes("mma") || s.includes("ufc") || s.includes("boxing")) return "MMA";
 	return "Fotbal";
 }
-function mapLeagueName(sportTitle) {
+function mapLeagueName(sportKey, sportTitle) {
+	const key = sportKey.toLowerCase();
 	const lower = sportTitle.toLowerCase();
-	if (lower.includes("epl") || lower.includes("premier league")) return "Premier League";
-	if (lower.includes("champions league")) return "Liga mistrů";
-	if (lower.includes("europa league")) return "Evropská liga";
-	if (lower.includes("nhl")) return "NHL";
-	if (lower.includes("nba")) return "NBA";
-	if (lower.includes("euroleague")) return "Euroliga";
-	if (lower.includes("ufc") || lower.includes("mma")) return "UFC / MMA";
+	if (key === "soccer_epl" || lower.includes("premier league")) return "Premier League";
+	if (key === "soccer_spain_la_liga" || lower.includes("la liga")) return "La Liga";
+	if (key === "soccer_germany_bundesliga") return "Bundesliga";
+	if (key === "soccer_italy_serie_a") return "Serie A";
+	if (key === "soccer_france_ligue_one") return "Ligue 1";
+	if (key === "soccer_uefa_champs_league" || lower.includes("champions league")) return "Liga mistrů";
+	if (key.startsWith("soccer_czech")) return "Chance Liga";
+	if (key === "icehockey_nhl" || lower.includes("nhl")) return "NHL";
+	if (key.startsWith("icehockey_czech")) return "Tipsport Extraliga";
+	if (key === "basketball_nba" || lower === "nba") return "NBA";
+	if (key.startsWith("basketball_czech")) return "Česká NBL";
+	if (key === "mma_mixed_martial_arts" || key.includes("ufc") || lower.includes("ufc")) return "UFC";
 	return sportTitle;
 }
-function scoreSoccerLeague(s) {
-	const text = `${s.key} ${s.title} ${s.description}`.toLowerCase();
-	if (text.includes("world_cup") || text.includes("nations_league") || text.includes("euro") || text.includes("qualif") || text.includes("friendly") || text.includes("conmebol") || text.includes("concacaf") || text.includes("afcon") || text.includes("copa_america")) return 100;
-	if (text.includes("uefa_champs") || text.includes("uefa_europa") || text.includes("soccer_epl") || text.includes("spain_la_liga") || text.includes("germany_bundesliga") || text.includes("italy_serie_a") || text.includes("france_ligue_one") || text.includes("czech")) return 90;
-	if (text.includes("efl_champ") || text.includes("bundesliga2") || text.includes("segunda") || text.includes("serie_b") || text.includes("ligue_two") || text.includes("eredivisie") || text.includes("primeira") || text.includes("poland") || text.includes("austria") || text.includes("switzerland") || text.includes("spl")) return 70;
-	return 40;
+var BLOCKED_GENERAL_REGEX = /\b(ncaa|ncaab|ncaaf|ncaaw|wncaab|college|varsity|friendly|friendlies|exhibition|preseason|pre season|summer league|all star|u19|u20|u21|u23|reserve|reserves|youth|amateur)\b/i;
+var BLOCKED_LOWER_DIVISION_REGEX = /\b(2|ii|2nd|second|third|fourth|bundesliga 2|bundesliga2|la liga 2|segunda|serie b|serie c|ligue 2|ligue two|efl|championship|league one|league two|national league|vanarama|eerste divisie|erste liga|fnl|narodni liga|ahl|echl|ohl|whl|qmjhl|ushl|mestis|allsvenskan|hockeyallsvenskan|maxa liga|eurocup|gleague|g league|wnba|qualif|qualification|qualifiers|women|womens|frauen|femenina|wsl|nwsl)\b/i;
+var BLOCKED_TENNIS_REGEX = /\b(doubles|mixed|challenger|itf|utr|exhibition|qualif|qualification|qualifiers|juniors|wheelchair)\b/i;
+var BLOCKED_MMA_REGEX = /\b(ksw|oktagon|bellator|pfl|one championship|one fc|cage warriors|lfa|invicta|aca|fen|clout|fame|bkfc|bare knuckle|rizin|pancrase|brave|ares|eagle fc|regional)\b/i;
+function normalizeCompetitionText(s) {
+	return `${s.key} ${s.title}`.toLowerCase().replace(/[_-]+/g, " ");
 }
-function scoreHockeyLeague(s) {
-	const text = `${s.key} ${s.title}`.toLowerCase();
-	if (text.includes("nhl") || text.includes("czech") || text.includes("extraliga")) return 100;
-	if (text.includes("liiga") || text.includes("shl") || text.includes("sweden") || text.includes("finland")) return 85;
-	if (text.includes("ahl") || text.includes("mestis") || text.includes("allsvenskan") || text.includes("khl")) return 70;
-	return 45;
-}
-function scoreBasketballLeague(s) {
-	const text = `${s.key} ${s.title}`.toLowerCase();
-	if (text.includes("basketball_nba") || s.title.toUpperCase() === "NBA") return 100;
-	if (text.includes("euroleague")) return 95;
-	if (text.includes("eurocup")) return 75;
-	if (text.includes("acb") || text.includes("ncaab") || text.includes("wnba") || text.includes("nbl")) return 60;
-	return 40;
-}
-function scoreTennisTournament(s) {
-	const text = `${s.key} ${s.title}`.toLowerCase();
-	let score = 40;
-	if (text.includes("atp")) score += 30;
-	else if (text.includes("wta")) score += 25;
-	if (!text.includes("doubles")) score += 20;
-	return score;
+function classifyMainCompetition(s) {
+	if (!s.active || s.has_outrights) return null;
+	const key = s.key.toLowerCase();
+	const normalized = normalizeCompetitionText(s);
+	if (BLOCKED_GENERAL_REGEX.test(normalized)) return null;
+	if (s.group === "Soccer") {
+		if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+		if (key === "soccer_uefa_champs_league") return {
+			category: "Fotbal",
+			priority: 100
+		};
+		if (key === "soccer_epl") return {
+			category: "Fotbal",
+			priority: 95
+		};
+		if (key.startsWith("soccer_czech")) return {
+			category: "Fotbal",
+			priority: 92
+		};
+		if (key === "soccer_spain_la_liga") return {
+			category: "Fotbal",
+			priority: 90
+		};
+		if (key === "soccer_germany_bundesliga") return {
+			category: "Fotbal",
+			priority: 88
+		};
+		if (key === "soccer_italy_serie_a") return {
+			category: "Fotbal",
+			priority: 86
+		};
+		if (key === "soccer_france_ligue_one") return {
+			category: "Fotbal",
+			priority: 84
+		};
+		return null;
+	}
+	if (s.group === "Ice Hockey") {
+		if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+		if (key === "icehockey_nhl") return {
+			category: "Hokej",
+			priority: 100
+		};
+		if (key.startsWith("icehockey_czech") && !/\b1 liga\b/i.test(normalized)) return {
+			category: "Hokej",
+			priority: 95
+		};
+		return null;
+	}
+	if (s.group === "Basketball") {
+		if (BLOCKED_LOWER_DIVISION_REGEX.test(normalized)) return null;
+		if (key === "basketball_nba") return {
+			category: "Basketbal",
+			priority: 100
+		};
+		if (key.startsWith("basketball_czech")) return {
+			category: "Basketbal",
+			priority: 90
+		};
+		return null;
+	}
+	if (s.group === "Tennis") {
+		if (BLOCKED_TENNIS_REGEX.test(normalized)) return null;
+		const isAtp = key.startsWith("tennis_atp_");
+		const isWta = key.startsWith("tennis_wta_");
+		if (!isAtp && !isWta) return null;
+		return {
+			category: "Tenis",
+			priority: (key.includes("aus_open") || key.includes("french_open") || key.includes("roland_garros") || key.includes("wimbledon") || key.includes("us_open") ? 100 : 80) + (isAtp ? 10 : 5)
+		};
+	}
+	if (s.group === "Mixed Martial Arts") {
+		if (BLOCKED_MMA_REGEX.test(normalized)) return null;
+		const isUfc = key.includes("ufc") || /\bufc\b/i.test(normalized);
+		if (key === "mma_mixed_martial_arts" || isUfc) return {
+			category: "MMA",
+			priority: isUfc ? 100 : 90
+		};
+		return null;
+	}
+	return null;
 }
 function selectActiveCompetitions(allSports) {
-	const activeMatchSports = allSports.filter((s) => s.active && !s.has_outrights);
-	const soccer = activeMatchSports.filter((s) => s.group === "Soccer").sort((a, b) => scoreSoccerLeague(b) - scoreSoccerLeague(a)).slice(0, 1);
-	const hockey = activeMatchSports.filter((s) => s.group === "Ice Hockey").sort((a, b) => scoreHockeyLeague(b) - scoreHockeyLeague(a)).slice(0, 1);
-	const tennis = activeMatchSports.filter((s) => s.group === "Tennis").sort((a, b) => scoreTennisTournament(b) - scoreTennisTournament(a)).slice(0, 1);
-	const mma = activeMatchSports.filter((s) => s.group === "Mixed Martial Arts").slice(0, 1);
-	const basketball = activeMatchSports.filter((s) => s.group === "Basketball").sort((a, b) => scoreBasketballLeague(b) - scoreBasketballLeague(a)).slice(0, 1);
-	const selected = [
-		...soccer.map((sport) => ({
+	const bestByCategory = /* @__PURE__ */ new Map();
+	for (const sport of allSports) {
+		const match = classifyMainCompetition(sport);
+		if (!match) continue;
+		const existing = bestByCategory.get(match.category);
+		if (!existing || match.priority > existing.priority) bestByCategory.set(match.category, {
 			sport,
-			category: "Fotbal"
-		})),
-		...hockey.map((sport) => ({
-			sport,
-			category: "Hokej"
-		})),
-		...tennis.map((sport) => ({
-			sport,
-			category: "Tenis"
-		})),
-		...mma.map((sport) => ({
-			sport,
-			category: "MMA"
-		})),
-		...basketball.map((sport) => ({
-			sport,
-			category: "Basketbal"
-		}))
+			category: match.category,
+			priority: match.priority
+		});
+	}
+	const orderedCategories = [
+		"Fotbal",
+		"Hokej",
+		"Tenis",
+		"MMA",
+		"Basketbal"
 	];
+	const selected = [];
 	const categoryByKey = /* @__PURE__ */ new Map();
-	selected.forEach(({ sport, category }) => {
-		categoryByKey.set(sport.key, category);
-	});
+	for (const cat of orderedCategories) {
+		const entry = bestByCategory.get(cat);
+		if (entry) {
+			selected.push({
+				sport: entry.sport,
+				category: entry.category
+			});
+			categoryByKey.set(entry.sport.key, entry.category);
+		}
+	}
 	return {
 		selected,
 		categoryByKey
@@ -13084,7 +13147,7 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 	const allSports = await sportsRes.json();
 	if (!Array.isArray(allSports)) throw new Error("The Odds API vrátilo neplatný seznam aktivních sportů.");
 	const { selected: activeCompetitions, categoryByKey } = selectActiveCompetitions(allSports);
-	if (activeCompetitions.length === 0) throw new Error("V The Odds API momentálně nejsou aktivní žádné soutěže pro Fotbal, Hokej, Tenis, MMA ani Basketbal.");
+	if (activeCompetitions.length === 0) throw new Error("V The Odds API momentálně nejsou aktivní žádné hlavní soutěže pro Betano (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga mistrů, české ligy, NHL, NBA, ATP/WTA, UFC).");
 	const endpoints = activeCompetitions.map(({ sport }) => `https://api.the-odds-api.com/v4/sports/${encodeURIComponent(sport.key)}/odds/?apiKey=${encodeURIComponent(key)}&regions=eu&markets=h2h`);
 	const responses = await Promise.allSettled(endpoints.map((url) => fetch(url)));
 	const eventMap = /* @__PURE__ */ new Map();
@@ -13135,7 +13198,9 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 	for (let i = 0; i < events.length; i++) {
 		const ev = events[i];
 		const sport = categoryByKey.get(ev.sport_key) ?? mapSportGroupOrKey("", ev.sport_key, ev.sport_title);
-		const league = mapLeagueName(ev.sport_title);
+		const evNormalized = `${ev.sport_key} ${ev.sport_title}`.toLowerCase().replace(/[_-]+/g, " ");
+		if (BLOCKED_GENERAL_REGEX.test(evNormalized) || sport === "MMA" && BLOCKED_MMA_REGEX.test(evNormalized) || sport === "Tenis" && BLOCKED_TENNIS_REGEX.test(evNormalized)) continue;
+		const league = mapLeagueName(ev.sport_key, ev.sport_title);
 		const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
 		const homePrices = [];
 		const awayPrices = [];
@@ -14886,13 +14951,14 @@ var RISK_BADGE_STYLES = {
 };
 var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const recommendedMinProb = (0, import_react.useMemo)(() => {
-		if (matches.length === 0) return 55;
-		const sorted = [...matches].sort((a, b) => b.aiProbability - a.aiProbability);
+		const validValueMatches = matches.filter((m) => m.valueScore >= 0);
+		if (validValueMatches.length === 0) return 55;
+		const sorted = [...validValueMatches].sort((a, b) => b.aiProbability - a.aiProbability);
 		const refProb = sorted[Math.min(2, sorted.length - 1)].aiProbability;
 		if (refProb < 55) return Math.max(25, Math.min(85, Math.floor(refProb)));
 		return 55;
 	}, [matches]);
-	const matchesSignature = (0, import_react.useMemo)(() => matches.map((m) => `${m.id}:${m.aiProbability}`).join("|"), [matches]);
+	const matchesSignature = (0, import_react.useMemo)(() => matches.map((m) => `${m.id}:${m.aiProbability}:${m.valueScore}`).join("|"), [matches]);
 	const [budget, setBudget] = (0, import_react.useState)(Math.max(5, Math.round(currentBankroll)));
 	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
 	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
@@ -14917,11 +14983,12 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 	(0, import_react.useEffect)(() => {
 		if (generated) setCustomStake(generated.recommendedStake);
 	}, [generated]);
-	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability).length, [
+	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length, [
 		matches,
 		selectedSports,
 		minMatchProbability
 	]);
+	const nonNegativeSportMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0).length, [matches, selectedSports]);
 	const toggleSport = (sport) => {
 		setSelectedSports((prev) => {
 			if (prev.includes(sport)) {
@@ -15090,12 +15157,12 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "mt-2.5 flex items-center justify-between text-xs text-slate-400",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zápasy splňující limit:" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zápasy splňující limit (Value ≥ 0,0 %):" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 									className: `font-mono font-semibold tabular-nums ${eligibleMatchesCount > 0 ? "text-emerald-300" : "text-rose-400"}`,
 									children: [
 										eligibleMatchesCount,
 										" z ",
-										matches.filter((m) => selectedSports.includes(m.sport)).length
+										nonNegativeSportMatchesCount
 									]
 								})]
 							}),
@@ -15163,7 +15230,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 								className: "mt-2.5 grid grid-cols-2 gap-2",
 								children: ALL_SPORTS.map((sport) => {
 									const active = selectedSports.includes(sport);
-									const count = matches.filter((m) => m.sport === sport && m.aiProbability >= minMatchProbability).length;
+									const count = matches.filter((m) => m.sport === sport && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length;
 									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 										type: "button",
 										onClick: () => toggleSport(sport),
@@ -15230,17 +15297,13 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 					children: !generated ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 						className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center",
 						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 								className: "font-display text-lg font-semibold text-slate-200",
-								children: [
-									"Žádný zápas nesplňuje minimální pravděpodobnost ",
-									minMatchProbability,
-									" %"
-								]
+								children: nonNegativeSportMatchesCount === 0 ? "Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)" : `Žádný zápas s nezáporným Value (≥ 0,0 %) nesplňuje limit ${minMatchProbability} %`
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 								className: "mt-1.5 text-sm text-slate-400",
-								children: "Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu."
+								children: nonNegativeSportMatchesCount === 0 ? "Zápasy se záporným Value (pod 0,0 %) generátor nikdy nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas." : "Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu."
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "mt-5 flex flex-wrap items-center justify-center gap-3",
@@ -16136,7 +16199,7 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 							className: "mt-0.5 text-xs text-slate-400",
-							children: "Stahuje max. 5 hlavních soutěží (1 za sport, trh h2h) = max. 5 kreditů na ruční aktualizaci. Mezipaměť platí 60 minut."
+							children: "Stahuje výhradně hlavní soutěže dostupné na Betanu (regions=eu, trh h2h, max. 5 kreditů na ruční aktualizaci). Mezipaměť platí 60 minut."
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
 							id: "odds-api-key",
@@ -16985,7 +17048,7 @@ function App() {
 	const [tickets, setTickets] = useLocalStorage("betedge_tickets_v1", INITIAL_DEMO_TICKETS);
 	const [slipMatchIds, setSlipMatchIds] = useLocalStorage("betedge_slip_v1", []);
 	const [customMatches, setCustomMatches] = useLocalStorage("betedge_custom_matches_v1", []);
-	const [oddsCache, setOddsCache] = useLocalStorage("betedge_odds_cache_v1", null);
+	const [oddsCache, setOddsCache] = useLocalStorage("betedge_odds_cache_v2", null);
 	const [liveMatches, setLiveMatches] = (0, import_react.useState)(() => {
 		if (!settings.demoMode && oddsCache && Array.isArray(oddsCache.matches) && oddsCache.matches.length > 0) return oddsCache.matches;
 		return null;

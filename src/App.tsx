@@ -41,7 +41,7 @@ export default function App() {
   const [tickets, setTickets] = useLocalStorage<Ticket[]>('betedge_tickets_v1', INITIAL_DEMO_TICKETS);
   const [slipMatchIds, setSlipMatchIds] = useLocalStorage<string[]>('betedge_slip_v1', []);
   const [customMatches, setCustomMatches] = useLocalStorage<MatchAnalysis[]>('betedge_custom_matches_v1', []);
-  const [oddsCache, setOddsCache] = useLocalStorage<OddsCache | null>('betedge_odds_cache_v1', null);
+  const [oddsCache, setOddsCache] = useLocalStorage<OddsCache | null>('betedge_odds_cache_v2', null);
 
   const [liveMatches, setLiveMatches] = useState<MatchAnalysis[] | null>(() => {
     if (!settings.demoMode && oddsCache && Array.isArray(oddsCache.matches) && oddsCache.matches.length > 0) {

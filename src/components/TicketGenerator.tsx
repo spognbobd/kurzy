@@ -119,8 +119,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   onDeleteCustomMatch,
 }) => {
   const recommendedMinProb = useMemo(() => {
-    if (matches.length === 0) return 55;
-    const sorted = [...matches].sort((a, b) => b.aiProbability - a.aiProbability);
+    const validValueMatches = matches.filter((m) => m.valueScore >= 0);
+    if (validValueMatches.length === 0) return 55;
+    const sorted = [...validValueMatches].sort((a, b) => b.aiProbability - a.aiProbability);
     const refIndex = Math.min(2, sorted.length - 1);
     const refProb = sorted[refIndex].aiProbability;
     if (refProb < 55) {
@@ -130,7 +131,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   }, [matches]);
 
   const matchesSignature = useMemo(
-    () => matches.map((m) => `${m.id}:${m.aiProbability}`).join('|'),
+    () => matches.map((m) => `${m.id}:${m.aiProbability}:${m.valueScore}`).join('|'),
     [matches]
   );
 
@@ -167,9 +168,17 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const eligibleMatchesCount = useMemo(
     () =>
       matches.filter(
-        (m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability
+        (m) =>
+          selectedSports.includes(m.sport) &&
+          m.aiProbability >= minMatchProbability &&
+          m.valueScore >= 0
       ).length,
     [matches, selectedSports, minMatchProbability]
+  );
+
+  const nonNegativeSportMatchesCount = useMemo(
+    () => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0).length,
+    [matches, selectedSports]
   );
 
   const toggleSport = (sport: SportCategory) => {
@@ -366,13 +375,13 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             </div>
 
             <div className="mt-2.5 flex items-center justify-between text-xs text-slate-400">
-              <span>Zápasy splňující limit:</span>
+              <span>Zápasy splňující limit (Value ≥ 0,0 %):</span>
               <span
                 className={`font-mono font-semibold tabular-nums ${
                   eligibleMatchesCount > 0 ? 'text-emerald-300' : 'text-rose-400'
                 }`}
               >
-                {eligibleMatchesCount} z {matches.filter((m) => selectedSports.includes(m.sport)).length}
+                {eligibleMatchesCount} z {nonNegativeSportMatchesCount}
               </span>
             </div>
 
@@ -444,7 +453,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               {ALL_SPORTS.map((sport) => {
                 const active = selectedSports.includes(sport);
                 const count = matches.filter(
-                  (m) => m.sport === sport && m.aiProbability >= minMatchProbability
+                  (m) =>
+                    m.sport === sport &&
+                    m.aiProbability >= minMatchProbability &&
+                    m.valueScore >= 0
                 ).length;
                 return (
                   <button
@@ -514,10 +526,14 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           {!generated ? (
             <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center">
               <p className="font-display text-lg font-semibold text-slate-200">
-                Žádný zápas nesplňuje minimální pravděpodobnost {minMatchProbability} %
+                {nonNegativeSportMatchesCount === 0
+                  ? 'Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)'
+                  : `Žádný zápas s nezáporným Value (≥ 0,0 %) nesplňuje limit ${minMatchProbability} %`}
               </p>
               <p className="mt-1.5 text-sm text-slate-400">
-                Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu.
+                {nonNegativeSportMatchesCount === 0
+                  ? 'Zápasy se záporným Value (pod 0,0 %) generátor nikdy nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas.'
+                  : 'Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu.'}
               </p>
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
                 <button
