@@ -61,46 +61,83 @@ export function resolveTippedAndOpponent(leg: TicketLeg): {
   };
 }
 
+function formatCzPercent(value: number, withSign = false): string {
+  const sign = withSign && value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1).replace('.', ',')} %`;
+}
+
 export function buildStatisticalMatchReasoning(leg: TicketLeg): string {
-  const { tippedTeam, opponentTeam, tippedIsAway } = resolveTippedAndOpponent(leg);
-  const betanoOdds = leg.betanoOdds.toFixed(2);
+  const betanoOddsNum = leg.betanoOdds;
   const marketAvgNum = leg.marketAvgOdds ?? leg.betanoOdds;
+  const betanoOdds = betanoOddsNum.toFixed(2);
   const marketAvg = marketAvgNum.toFixed(2);
-  const probStr = `${leg.aiProbability.toFixed(1).replace('.', ',')} %`;
-  const impliedStr = `${((1 / leg.betanoOdds) * 100).toFixed(1).replace('.', ',')} %`;
-  const valueStr = `${leg.valueScore > 0 ? '+' : ''}${leg.valueScore.toFixed(1).replace('.', ',')} %`;
 
-  const tippedForm = (tippedIsAway ? leg.formAway : leg.formHome)?.join('-') ?? 'vyrovnaná';
-  const oppForm = (tippedIsAway ? leg.formHome : leg.formAway)?.join('-') ?? 'vyrovnaná';
-  const h2hNote = leg.h2hSummary ? ` (${leg.h2hSummary})` : '';
+  const oddsDiffPct = marketAvgNum > 0 ? ((betanoOddsNum - marketAvgNum) / marketAvgNum) * 100 : 0;
+  const impliedProb = betanoOddsNum > 0 ? (1 / betanoOddsNum) * 100 : 0;
+  const realProb = leg.aiProbability;
+  const probEdge = realProb - impliedProb;
 
-  const verdictLine =
-    leg.betanoOdds > marketAvgNum
-      ? `Verdikt k tiketu: Kurz Betana ${betanoOdds} leží nad průměrem trhu (${marketAvg}) a při odhadované pravděpodobnosti výhry ${probStr} generuje hodnotu Value ${valueStr}.`
-      : `Verdikt k tiketu: Nabízený kurz Betana ${betanoOdds} (průměr trhu ${marketAvg}) odpovídá pravděpodobnosti výhry ${probStr} s výslednou hodnotou Value ${valueStr}.`;
+  const oddsDiffLabel =
+    Math.abs(oddsDiffPct) < 0.05
+      ? 'shodný s průměrem trhu'
+      : oddsDiffPct > 0
+      ? `o ${formatCzPercent(oddsDiffPct)} vyšší než průměr trhu`
+      : `o ${formatCzPercent(Math.abs(oddsDiffPct))} nižší než průměr trhu`;
 
   return [
-    `Aktuální forma / herní styl ${tippedTeam}: V soutěži ${leg.league} drží bilanci posledních 5 utkání ${tippedForm}, což pro tip „${leg.recommendedPick}“ znamená modelovou pravděpodobnost výhry ${probStr} oproti implikované šanci kurzu ${impliedStr}.`,
+    `Kurzy a trh: Betano vypisuje na tip „${leg.recommendedPick}“ kurz ${betanoOdds}, zatímco průměr trhu je ${marketAvg} (kurz je ${oddsDiffLabel}).`,
     ``,
-    `Síla soupeře ${opponentTeam}: Soupeř vstupuje do zápasu s formou ${oppForm}${h2hNote}, na základě čehož trh oceňuje zápas průměrným kurzem ${marketAvg}.`,
+    `Implikovaná vs. reálná šance: Kurz Betana implikuje pravděpodobnost ${formatCzPercent(impliedProb)}, odhadovaná reálná šance zápasu činí ${formatCzPercent(realProb)} (rozdíl ${formatCzPercent(probEdge, true)}).`,
     ``,
-    verdictLine,
+    `Verdikt k tiketu: Výsledná matematická hodnota kurzu činí Value ${formatCzPercent(leg.valueScore, true)}.`,
   ].join('\n');
 }
 
 interface GeminiRestResponse {
   candidates?: Array<{
+    finishReason?: string;
     content?: {
       parts?: Array<{
         text?: string;
       }>;
     };
   }>;
+  promptFeedback?: {
+    blockReason?: string;
+  };
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+  };
 }
 
 export interface SingleMatchAnalysisResult {
   text: string;
   source: 'gemini' | 'stats';
+  apiStatus?: string;
+}
+
+async function extractGeminiErrorStatus(response: Response): Promise<string> {
+  try {
+    const raw = await response.text();
+    if (!raw) {
+      return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+    }
+    try {
+      const parsed = JSON.parse(raw) as GeminiRestResponse;
+      const errMsg = parsed.error?.message?.trim();
+      const errStatus = parsed.error?.status?.trim();
+      if (errMsg) {
+        return `HTTP ${response.status}${errStatus ? ` (${errStatus})` : ''}: ${errMsg}`;
+      }
+    } catch {
+      // Fallback to raw text below
+    }
+    return `HTTP ${response.status}: ${raw.slice(0, 200).trim()}`;
+  } catch {
+    return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  }
 }
 
 export async function fetchSingleMatchReasoning(
@@ -109,11 +146,16 @@ export async function fetchSingleMatchReasoning(
 ): Promise<SingleMatchAnalysisResult> {
   const apiKey = geminiApiKey.trim().replace(/\s+/g, '');
   if (!apiKey) {
-    return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
+    return {
+      text: buildStatisticalMatchReasoning(leg),
+      source: 'stats',
+      apiStatus: 'API klíč není zadaný',
+    };
   }
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
+  const impliedPct = leg.betanoOdds > 0 ? Number(((1 / leg.betanoOdds) * 100).toFixed(1)) : 0;
 
   const matchContext = {
     sport: leg.sport,
@@ -128,20 +170,18 @@ export async function fetchSingleMatchReasoning(
     casZapasu: leg.kickoffTime,
     kurzBetano: leg.betanoOdds,
     prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
-    aiPravdepodobnostPct: leg.aiProbability,
+    implikovanaSancePct: impliedPct,
+    realnaSancePct: leg.aiProbability,
     valuePct: leg.valueScore,
-    formaDomaciPoslednich5: leg.formHome?.join('-') ?? 'neuvedena',
-    formaHostePoslednich5: leg.formAway?.join('-') ?? 'neuvedena',
-    vzajemnaBilance: leg.h2hSummary ?? 'neuvedena',
   };
 
   const prompt = [
     `Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Dnešní datum: ${todayIso}.`,
     `Na základě dodaných dat zápasu a tvých znalostí o týmech/hráčích, jejich herním stylu, výhodě domácího prostředí a vzájemné síle napiš stručné, věcné české zdůvodnění přesně v této tříodstavcové struktuře (čistý text bez markdown hvězdiček a nadpisů):`,
     ``,
-    `Aktuální forma / herní styl ${tippedTeam}: zhodnoť dodanou bilanci, herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
+    `Aktuální forma / herní styl ${tippedTeam}: zhodnoť herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
     ``,
-    `Síla soupeře ${opponentTeam}: vysvětli, proč má soupeř takový kurz, jaké má slabiny nebo jaká je vzájemná bilance a poměr sil.`,
+    `Síla soupeře ${opponentTeam}: vysvětli, proč má soupeř takový kurz, jaké má slabiny nebo jaká je vzájemná síla.`,
     ``,
     `Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana (${leg.betanoOdds.toFixed(2)}) reálnou hodnotu (Value ${leg.valueScore.toFixed(1)} %) oproti průměru trhu (${(leg.marketAvgOdds ?? leg.betanoOdds).toFixed(2)}) a odhadované pravděpodobnosti (${leg.aiProbability.toFixed(1)} %).`,
     ``,
@@ -168,7 +208,12 @@ export async function fetchSingleMatchReasoning(
     });
 
     if (!response.ok) {
-      return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
+      const apiStatus = await extractGeminiErrorStatus(response);
+      return {
+        text: buildStatisticalMatchReasoning(leg),
+        source: 'stats',
+        apiStatus,
+      };
     }
 
     const payload = (await response.json()) as GeminiRestResponse;
@@ -180,13 +225,30 @@ export async function fetchSingleMatchReasoning(
         .trim() ?? '';
 
     if (!rawText) {
-      return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
+      const reason =
+        payload.promptFeedback?.blockReason ??
+        payload.candidates?.[0]?.finishReason ??
+        'prázdná odpověď bez textu';
+      return {
+        text: buildStatisticalMatchReasoning(leg),
+        source: 'stats',
+        apiStatus: `HTTP ${response.status}: Model nevrátil text (${reason})`,
+      };
     }
 
     return { text: rawText, source: 'gemini' };
-  } catch {
-    // On 6s timeout or any network/CORS error, immediately return clean statistical analysis
-    return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
+  } catch (err) {
+    const isTimeout =
+      controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError');
+    const apiStatus = isTimeout
+      ? 'Timeout 6s'
+      : `Síťová chyba: ${err instanceof Error ? err.message : 'Failed to fetch'}`;
+
+    return {
+      text: buildStatisticalMatchReasoning(leg),
+      source: 'stats',
+      apiStatus,
+    };
   } finally {
     clearTimeout(timeoutId);
   }

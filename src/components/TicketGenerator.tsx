@@ -129,7 +129,9 @@ function renderFormattedGeminiReasoning(text: string) {
         const colonIdx = para.indexOf(':');
         const hasKnownPrefix =
           colonIdx > 0 &&
-          /^(Aktuální forma|Síla soupeře|Verdikt k tiketu)/i.test(para.slice(0, colonIdx));
+          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu)/i.test(
+            para.slice(0, colonIdx)
+          );
 
         if (!hasKnownPrefix) {
           return <p key={idx}>{para}</p>;
@@ -186,7 +188,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
-  const [statFallbackReasons, setStatFallbackReasons] = useState<Record<string, string>>({});
+  const [statFallbackReasons, setStatFallbackReasons] = useState<
+    Record<string, { text: string; apiStatus?: string }>
+  >({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -212,10 +216,13 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   }, [generated]);
 
   const trimmedGeminiKey = geminiApiKey.trim();
-  const hasGeminiKey = trimmedGeminiKey.length > 0;
+
+  useEffect(() => {
+    setStatFallbackReasons({});
+  }, [trimmedGeminiKey]);
 
   const handleFetchSingleAnalysis = async (leg: Ticket['legs'][number]) => {
-    if (!hasGeminiKey || loadingMatchIds[leg.matchId]) return;
+    if (loadingMatchIds[leg.matchId]) return;
 
     setLoadingMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
 
@@ -228,7 +235,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           return next;
         });
       } else {
-        setStatFallbackReasons((prev) => ({ ...prev, [leg.matchId]: result.text }));
+        setStatFallbackReasons((prev) => ({
+          ...prev,
+          [leg.matchId]: { text: result.text, apiStatus: result.apiStatus },
+        }));
       }
     } finally {
       setLoadingMatchIds((prev) => {
@@ -304,9 +314,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       riskLevel: activeMode.riskLabel,
       legs: generated.legs.map((leg) => ({
         ...leg,
-        reasoning: hasGeminiKey
-          ? aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId] ?? leg.reasoning
-          : leg.reasoning,
+        reasoning:
+          aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text ?? leg.reasoning,
       })),
       totalOdds: generated.totalOdds,
       totalProbability: generated.totalProbability,
@@ -754,10 +763,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               {/* Legs List */}
               <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
-                  const geminiReason = hasGeminiKey ? aiReasons[leg.matchId] : undefined;
-                  const statReason = hasGeminiKey ? statFallbackReasons[leg.matchId] : undefined;
-                  const activeReason = geminiReason || statReason;
-                  const isLoadingReason = hasGeminiKey && Boolean(loadingMatchIds[leg.matchId]);
+                  const geminiReason = aiReasons[leg.matchId];
+                  const statFallback = statFallbackReasons[leg.matchId];
+                  const activeReason = geminiReason || statFallback?.text;
+                  const isLoadingReason = Boolean(loadingMatchIds[leg.matchId]);
 
                   return (
                     <div key={leg.matchId} className="flex flex-col gap-3 p-4">
@@ -810,53 +819,56 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         </div>
                       </div>
 
-                      {/* On-Demand Analysis (only when Gemini API key is set) */}
-                      {hasGeminiKey && (
-                        <>
-                          {activeReason ? (
-                            <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
-                              <div className="flex items-center justify-between gap-2 text-[11px]">
-                                <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
-                                  <Sparkles className="h-3 w-3 shrink-0" />
-                                  <span>
-                                    {geminiReason
-                                      ? 'Gemini 3.8 Flash · AI analýza'
-                                      : 'Statistický rozbor zápasu'}
-                                  </span>
+                      {/* On-Demand Analysis */}
+                      {activeReason ? (
+                        <div>
+                          <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                            <div className="flex items-center justify-between gap-2 text-[11px]">
+                              <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                                <Sparkles className="h-3 w-3 shrink-0" />
+                                <span>
+                                  {geminiReason
+                                    ? 'Gemini 3.8 Flash · AI analýza'
+                                    : 'Statistický rozbor zápasu'}
                                 </span>
-                              </div>
-                              {renderFormattedGeminiReasoning(activeReason)}
+                              </span>
                             </div>
-                          ) : (
-                            <div className="flex flex-col gap-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <button
-                                  type="button"
-                                  disabled={isLoadingReason}
-                                  onClick={() => void handleFetchSingleAnalysis(leg)}
-                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
-                                >
-                                  {isLoadingReason ? (
-                                    <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                                  ) : (
-                                    <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                                  )}
-                                  <span>
-                                    {isLoadingReason ? 'Načítám analýzu...' : 'Zobrazit AI analýzu'}
-                                  </span>
-                                </button>
-                              </div>
-                              {isLoadingReason && (
-                                <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
-                                  <div className="space-y-1.5" aria-busy="true">
-                                    <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
-                                    <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
-                                  </div>
-                                </div>
+                            {renderFormattedGeminiReasoning(activeReason)}
+                          </div>
+                          {!geminiReason && statFallback?.apiStatus && (
+                            <p className="mt-1.5 px-1 font-mono text-[11px] leading-snug text-slate-500">
+                              Stav API: {statFallback.apiStatus}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={isLoadingReason}
+                              onClick={() => void handleFetchSingleAnalysis(leg)}
+                              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {isLoadingReason ? (
+                                <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3.5 w-3.5 shrink-0" />
                               )}
+                              <span>
+                                {isLoadingReason ? 'Načítám analýzu...' : 'Zobrazit AI analýzu'}
+                              </span>
+                            </button>
+                          </div>
+                          {isLoadingReason && (
+                            <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                              <div className="space-y-1.5" aria-busy="true">
+                                <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                                <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
+                              </div>
                             </div>
                           )}
-                        </>
+                        </div>
                       )}
                     </div>
                   );

@@ -221,14 +221,19 @@ function formatCzechKickoff(iso: string): { label: string; timeWindow: TimeWindo
 /**
  * Deterministic fallback form generator seeded by team name when API-Sports is not configured.
  */
-function deriveFormFromOdds(impliedProb: number, seedStr: string): FormResult[] {
+function deriveFormFromOdds(
+  impliedProb: number,
+  seedStr: string,
+  sport: SportCategory
+): FormResult[] {
+  const allowsDraw = sport === 'Fotbal' || sport === 'Hokej';
   const hash = seedStr.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
   const results: FormResult[] = [];
   for (let i = 0; i < 5; i++) {
     const roll = ((hash * (i + 3) + i * 17) % 100) / 100;
     const winThreshold = Math.min(0.82, Math.max(0.28, impliedProb / 100 + 0.08));
     if (roll < winThreshold) results.push('V');
-    else if (roll < winThreshold + 0.16) results.push('R');
+    else if (allowsDraw && roll < winThreshold + 0.16) results.push('R');
     else results.push('P');
   }
   return results;
@@ -565,8 +570,8 @@ export async function fetchLiveOddsAndStats(
       }
     }
 
-    const finalFormHome = formHome ?? deriveFormFromOdds((1 / avgHome) * 100, ev.home_team);
-    const finalFormAway = formAway ?? deriveFormFromOdds((1 / avgAway) * 100, ev.away_team);
+    const finalFormHome = formHome ?? deriveFormFromOdds((1 / avgHome) * 100, ev.home_team, sport);
+    const finalFormAway = formAway ?? deriveFormFromOdds((1 / avgAway) * 100, ev.away_team, sport);
 
     const h2hHomeWins = finalFormHome.filter((r) => r === 'V').length >= finalFormAway.filter((r) => r === 'V').length ? 3 : 1;
     const h2hAwayWins = 4 - h2hHomeWins;
