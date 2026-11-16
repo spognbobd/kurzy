@@ -14893,13 +14893,8 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 };
 // src/services/geminiReasoningService.ts
 var LOCAL_STORAGE_REASONS_KEY = "betedge_gemini_match_reasons_v1";
-var GEMINI_PER_MODEL_TIMEOUT_MS = 4e3;
-var GEMINI_MODEL_PRIORITY = [
-	"gemini-3.8-flash",
-	"gemini-3.8-flash-lite",
-	"gemini-3.8-pro",
-	"gemini-3-flash-preview"
-];
+var GEMINI_PER_MODEL_TIMEOUT_MS = 12e3;
+var GEMINI_MODEL_PRIORITY = ["gemini-3-flash-preview", "gemini-3.8-flash"];
 function loadCachedMatchReasons() {
 	if (typeof window === "undefined") return {};
 	try {
@@ -15039,7 +15034,7 @@ async function fetchSingleMatchReasoning(leg, geminiApiKey) {
 				modelUsed: model
 			};
 		} catch (err) {
-			lastErrorStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? `${model}: Timeout 4s` : `${model}: Síťová chyba (${err instanceof Error ? err.message : "Failed to fetch"})`;
+			lastErrorStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? `${model}: Timeout 12s` : `${model}: Síťová chyba (${err instanceof Error ? err.message : "Failed to fetch"})`;
 			continue;
 		} finally {
 			clearTimeout(timeoutId);

@@ -1,12 +1,10 @@
 import { TicketLeg } from '../types/betting';
 
 const LOCAL_STORAGE_REASONS_KEY = 'betedge_gemini_match_reasons_v1';
-const GEMINI_PER_MODEL_TIMEOUT_MS = 4000;
+const GEMINI_PER_MODEL_TIMEOUT_MS = 12000;
 const GEMINI_MODEL_PRIORITY = [
-  'gemini-3.8-flash',
-  'gemini-3.8-flash-lite',
-  'gemini-3.8-pro',
   'gemini-3-flash-preview',
+  'gemini-3.8-flash',
 ] as const;
 
 export function loadCachedMatchReasons(): Record<string, string> {
@@ -246,7 +244,7 @@ export async function fetchSingleMatchReasoning(
       const isTimeout =
         controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError');
       lastErrorStatus = isTimeout
-        ? `${model}: Timeout 4s`
+        ? `${model}: Timeout 12s`
         : `${model}: Síťová chyba (${err instanceof Error ? err.message : 'Failed to fetch'})`;
       continue;
     } finally {
