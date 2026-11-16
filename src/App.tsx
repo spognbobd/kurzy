@@ -344,6 +344,7 @@ export default function App() {
           <MatchFeed
             matches={activeMatches}
             selectedMatchIds={slipMatchIds}
+            geminiApiKey={(settings.geminiApiKey ?? '').trim()}
             onToggleMatchOnSlip={handleToggleMatchOnSlip}
             onOpenBetano={handleOpenBetano}
             isDemoMode={settings.demoMode}

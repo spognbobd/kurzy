@@ -1,21 +1,29 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Check,
   ChevronDown,
+  ChevronUp,
   ExternalLink,
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
   TrendingUp,
 } from 'lucide-react';
-import { MatchAnalysis, SportFilter, TimeWindow } from '../types/betting';
+import { MatchAnalysis, SportFilter, TicketLeg, TimeWindow } from '../types/betting';
 import { BETANO_HOME_URL, formatOdds, formatPercent } from '../utils/analyticsEngine';
+import {
+  fetchSingleMatchReasoning,
+  loadCachedMatchReasons,
+  saveCachedMatchReasons,
+} from '../services/geminiReasoningService';
 
 interface MatchFeedProps {
   matches: MatchAnalysis[];
   selectedMatchIds: string[];
+  geminiApiKey: string;
   onToggleMatchOnSlip: (match: MatchAnalysis) => void;
   onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
   isDemoMode: boolean;
@@ -71,9 +79,66 @@ function formatCompactUpdatedTime(timestampMs: number | null): string | null {
   return `Aktualizováno ${dateStr} ${hhmm}`;
 }
 
+function matchToTicketLeg(m: MatchAnalysis): TicketLeg {
+  return {
+    matchId: m.id,
+    sport: m.sport,
+    league: m.league,
+    homeTeam: m.homeTeam,
+    awayTeam: m.awayTeam,
+    kickoffTime: m.kickoffTime,
+    kickoffIso: m.kickoffIso,
+    recommendedPick: m.recommendedPick,
+    marketLabel: m.marketLabel,
+    betanoOdds: m.odds.betano,
+    aiProbability: m.aiProbability,
+    valueScore: m.valueScore,
+    marketAvgOdds: m.odds.marketAvg,
+  };
+}
+
+function renderFormattedReasoning(text: string) {
+  const paragraphs = text
+    .replace(/\*\*/g, '')
+    .split(/\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-300">
+      {paragraphs.map((para, idx) => {
+        const colonIdx = para.indexOf(':');
+        const hasKnownPrefix =
+          colonIdx > 0 &&
+          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu)/i.test(
+            para.slice(0, colonIdx)
+          );
+
+        if (!hasKnownPrefix) {
+          return <p key={idx}>{para}</p>;
+        }
+
+        const label = para.slice(0, colonIdx + 1);
+        const body = para.slice(colonIdx + 1).trim();
+        const isVerdict = /^Verdikt k tiketu/i.test(label);
+
+        return (
+          <p key={idx}>
+            <span className={`font-semibold ${isVerdict ? 'text-emerald-300' : 'text-slate-100'}`}>
+              {label}
+            </span>{' '}
+            <span>{body}</span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 export const MatchFeed: React.FC<MatchFeedProps> = ({
   matches,
   selectedMatchIds,
+  geminiApiKey,
   onToggleMatchOnSlip,
   onOpenBetano,
   isDemoMode,
@@ -90,6 +155,56 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   const [onlyValueBets, setOnlyValueBets] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('value');
   const [searchQuery, setSearchQuery] = useState('');
+  const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
+  const [aiModels, setAiModels] = useState<Record<string, string>>({});
+  const [statFallbackReasons, setStatFallbackReasons] = useState<
+    Record<string, { text: string; apiStatus?: string }>
+  >({});
+  const [expandedMatchIds, setExpandedMatchIds] = useState<Record<string, boolean>>({});
+  const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
+
+  const trimmedGeminiKey = geminiApiKey.trim();
+
+  useEffect(() => {
+    setStatFallbackReasons({});
+  }, [trimmedGeminiKey]);
+
+  const handleOpenOrFetchAnalysis = async (match: MatchAnalysis) => {
+    if (loadingMatchIds[match.id]) return;
+
+    const cachedText = aiReasons[match.id] ?? statFallbackReasons[match.id]?.text;
+    if (cachedText) {
+      setExpandedMatchIds((prev) => ({ ...prev, [match.id]: true }));
+      return;
+    }
+
+    setLoadingMatchIds((prev) => ({ ...prev, [match.id]: true }));
+    try {
+      const result = await fetchSingleMatchReasoning(matchToTicketLeg(match), trimmedGeminiKey);
+      if (result.source === 'gemini') {
+        setAiReasons((prev) => {
+          const next = { ...prev, [match.id]: result.text };
+          saveCachedMatchReasons(next);
+          return next;
+        });
+        if (result.modelUsed) {
+          setAiModels((prev) => ({ ...prev, [match.id]: result.modelUsed! }));
+        }
+      } else {
+        setStatFallbackReasons((prev) => ({
+          ...prev,
+          [match.id]: { text: result.text, apiStatus: result.apiStatus },
+        }));
+      }
+      setExpandedMatchIds((prev) => ({ ...prev, [match.id]: true }));
+    } finally {
+      setLoadingMatchIds((prev) => {
+        const next = { ...prev };
+        delete next[match.id];
+        return next;
+      });
+    }
+  };
 
   const summaryStats = useMemo(() => {
     const positiveCount = matches.filter(isMatchPositiveValue).length;
@@ -467,6 +582,74 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       </span>
                     </div>
                   </div>
+
+                  {/* On-Click Collapsible AI Analysis */}
+                  {(() => {
+                    const geminiReason = aiReasons[match.id];
+                    const statFallback = statFallbackReasons[match.id];
+                    const activeReason = geminiReason || statFallback?.text;
+                    const isExpanded = Boolean(expandedMatchIds[match.id] && activeReason);
+                    const isLoadingReason = Boolean(loadingMatchIds[match.id]);
+
+                    if (isExpanded && activeReason) {
+                      return (
+                        <div className="mt-2.5">
+                          <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                            <div className="flex items-center justify-between gap-2 text-[11px]">
+                              <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                                <Sparkles className="h-3 w-3 shrink-0" />
+                                <span>
+                                  {geminiReason
+                                    ? `${aiModels[match.id] ?? 'gemini-3-flash-preview'} · AI analýza`
+                                    : 'Statistický rozbor zápasu'}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedMatchIds((prev) => ({ ...prev, [match.id]: false }))
+                                }
+                                className="inline-flex min-h-[28px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white"
+                              >
+                                <span>Sbalit</span>
+                                <ChevronUp className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            {renderFormattedReasoning(activeReason)}
+                          </div>
+                          {!geminiReason && statFallback?.apiStatus && (
+                            <p className="mt-1 px-1 font-mono text-[11px] leading-snug text-slate-500">
+                              Stav API: {statFallback.apiStatus}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="mt-2.5">
+                        <button
+                          type="button"
+                          disabled={isLoadingReason}
+                          onClick={() => void handleOpenOrFetchAnalysis(match)}
+                          className="inline-flex min-h-[34px] items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          {isLoadingReason ? (
+                            <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                          ) : (
+                            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <span>
+                            {isLoadingReason
+                              ? 'Načítám AI analýzu...'
+                              : activeReason
+                              ? 'Zobrazit AI analýzu (uloženo)'
+                              : 'Zobrazit AI analýzu'}
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Single-Row Side-by-Side Actions */}

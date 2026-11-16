@@ -180,8 +180,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [exactLegsCount, setExactLegsCount] = useState<number | null>(null);
   const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(ALL_SPORTS);
-  const [showOtherSports, setShowOtherSports] = useState(false);
-  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
   const [variationIndex, setVariationIndex] = useState(0);
   const [customStakeInput, setCustomStakeInput] = useState<string>('5');
   const [savedFeedback, setSavedFeedback] = useState(false);
@@ -230,7 +229,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     }
   }, [generated]);
 
-  const { primarySports, otherSports, sportCounts } = useMemo(() => {
+  const { availableSports, sportCounts } = useMemo(() => {
     const counts = new Map<SportCategory, { totalNonNeg: number; eligible: number }>();
     for (const s of ALL_SPORTS) {
       counts.set(s, { totalNonNeg: 0, eligible: 0 });
@@ -246,10 +245,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     }
 
     const withMatches = ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0);
-    const primary = withMatches.length > 0 ? withMatches : ALL_SPORTS;
-    const secondary = withMatches.length > 0 ? ALL_SPORTS.filter((s) => !withMatches.includes(s)) : [];
-
-    return { primarySports: primary, otherSports: secondary, sportCounts: counts };
+    return { availableSports: withMatches, sportCounts: counts };
   }, [matches, minMatchProbability]);
 
   const handleOpenOrFetchAnalysis = async (leg: Ticket['legs'][number]) => {
@@ -313,7 +309,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const toggleSport = (sport: SportCategory) => {
     setSelectedSports((prev) => {
       if (prev.includes(sport)) {
-        if (prev.length === 1) return prev;
+        const activeAvailableCount = prev.filter((s) => availableSports.includes(s)).length;
+        if (activeAvailableCount <= 1) return prev;
         return prev.filter((s) => s !== sport);
       }
       return [...prev, sport];
@@ -389,10 +386,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     exactLegsCount === null && ticketStyle === 'smart_value' && minMatchProbability < 45;
   const riskTextClass = generated ? RISK_TEXT_STYLES[generated.estimatedRisk] : '';
   const customMatches = useMemo(() => matches.filter((m) => m.isCustom), [matches]);
-  const comboIndexLabel =
+  const currentComboPosition =
     generated && generated.availableCombosCount > 1
-      ? ` (${(variationIndex % generated.availableCombosCount) + 1}/${generated.availableCombosCount})`
-      : '';
+      ? (variationIndex % generated.availableCombosCount) + 1
+      : 1;
 
   const legsSummaryLabel =
     exactLegsCount === null
@@ -630,49 +627,17 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             </div>
           </div>
 
-          {/* 3C. Available Sports Filter (+ collapsible Other Sports) */}
+          {/* 3C. Available Sports Filter (strictly sports with >= 1 match) */}
           <div className="border-t border-slate-800/80 pt-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-slate-300">Zahrnuté sporty</span>
-              {otherSports.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowOtherSports((v) => !v)}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200"
-                >
-                  <span>Další sporty ({otherSports.length})</span>
-                  {showOtherSports ? (
-                    <ChevronUp className="h-3.5 w-3.5" />
-                  ) : (
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
-            </div>
+            <span className="block text-xs font-semibold text-slate-300">Zahrnuté sporty</span>
 
-            <div className="mt-2 grid grid-cols-2 gap-1.5">
-              {primarySports.map((sport) => {
-                const active = selectedSports.includes(sport);
-                const count = sportCounts.get(sport)?.eligible ?? 0;
-                return (
-                  <button
-                    key={sport}
-                    type="button"
-                    onClick={() => toggleSport(sport)}
-                    className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
-                      active
-                        ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
-                        : 'border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    <span className="truncate">{sport}</span>
-                    <span className="font-mono text-[11px] tabular-nums opacity-80">{count}</span>
-                  </button>
-                );
-              })}
-
-              {showOtherSports &&
-                otherSports.map((sport) => {
+            {availableSports.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">
+                Momentálně nejsou dostupné žádné zápasy pro generování tiketu.
+              </p>
+            ) : (
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
+                {availableSports.map((sport) => {
                   const active = selectedSports.includes(sport);
                   const count = sportCounts.get(sport)?.eligible ?? 0;
                   return (
@@ -682,16 +647,17 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                       onClick={() => toggleSport(sport)}
                       className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
                         active
-                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                          : 'border-slate-800/80 bg-[#090D16] text-slate-500 hover:text-slate-300'
+                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
+                          : 'border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200'
                       }`}
                     >
                       <span className="truncate">{sport}</span>
-                      <span className="font-mono text-[11px] tabular-nums opacity-70">{count}</span>
+                      <span className="font-mono text-[11px] tabular-nums opacity-80">{count}</span>
                     </button>
                   );
                 })}
-            </div>
+              </div>
+            )}
           </div>
 
           {customMatches.length > 0 && (
@@ -769,8 +735,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             </div>
           ) : (
             <div className="rounded-2xl border border-emerald-500/40 bg-[#111827] p-4 sm:p-5">
-              {/* Ticket Header & Regenerate */}
-              <div className="flex flex-col gap-3 border-b border-slate-800/80 pb-3.5 sm:flex-row sm:items-center sm:justify-between">
+              {/* Ticket Header & Combination Stepper */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-slate-800/80 pb-3.5">
                 <div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
                     <span className="font-semibold text-emerald-400">{activeMode.shortTitle}</span>
@@ -794,48 +760,41 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   </h2>
                 </div>
 
-                <div
-                  role="group"
-                  aria-label="Listování kombinacemi tiketu"
-                  className="inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto"
-                >
-                  <button
-                    type="button"
-                    onClick={handlePrevVariation}
-                    disabled={generated.availableCombosCount <= 1}
-                    aria-label="Předchozí kombinace"
-                    title="Předchozí kombinace"
-                    className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                {generated.availableCombosCount <= 1 ? (
+                  <span className="inline-flex min-h-[36px] items-center self-start rounded-xl border border-slate-800 bg-[#090D16] px-3 py-1.5 text-xs font-medium text-slate-500 sm:self-auto">
+                    Jediná dostupná kombinace
+                  </span>
+                ) : (
+                  <div
+                    role="group"
+                    aria-label="Listování kombinacemi tiketu"
+                    className="inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto"
                   >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={handlePrevVariation}
+                      aria-label="Předchozí kombinace"
+                      title="Předchozí kombinace"
+                      className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={handleNextVariation}
-                    disabled={generated.availableCombosCount <= 1}
-                    title={
-                      generated.availableCombosCount <= 1
-                        ? 'Pro tento filtr není dostupná jiná kombinace'
-                        : 'Další kombinace zápasů'
-                    }
-                    className="inline-flex min-h-[40px] items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Jiná kombinace{comboIndexLabel}</span>
-                  </button>
+                    <span className="px-3 py-1.5 font-mono text-xs font-semibold tabular-nums text-slate-200 whitespace-nowrap">
+                      Kombinace {currentComboPosition} / {generated.availableCombosCount}
+                    </span>
 
-                  <button
-                    type="button"
-                    onClick={handleNextVariation}
-                    disabled={generated.availableCombosCount <= 1}
-                    aria-label="Další kombinace"
-                    title="Další kombinace"
-                    className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={handleNextVariation}
+                      aria-label="Další kombinace"
+                      title="Další kombinace"
+                      className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Compact 2x2 Ticket Overview Grid */}

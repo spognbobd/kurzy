@@ -14482,6 +14482,161 @@ var Navbar = ({ activeTab, onSelectTab, slipCount, onOpenSlip }) => {
 		})
 	})] });
 };
+// src/services/geminiReasoningService.ts
+var LOCAL_STORAGE_REASONS_KEY = "betedge_gemini_match_reasons_v1";
+var GEMINI_PER_MODEL_TIMEOUT_MS = 12e3;
+var GEMINI_MODEL_PRIORITY = ["gemini-3-flash-preview", "gemini-3.8-flash"];
+function loadCachedMatchReasons() {
+	if (typeof window === "undefined") return {};
+	try {
+		const raw = window.localStorage.getItem(LOCAL_STORAGE_REASONS_KEY);
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+		return {};
+	} catch {
+		return {};
+	}
+}
+function saveCachedMatchReasons(reasons) {
+	if (typeof window === "undefined") return;
+	try {
+		window.localStorage.setItem(LOCAL_STORAGE_REASONS_KEY, JSON.stringify(reasons));
+	} catch {}
+}
+function resolveTippedAndOpponent(leg) {
+	const cleanHome = leg.homeTeam.replace(/\(.*?\)/g, "").trim();
+	const cleanAway = leg.awayTeam.replace(/\(.*?\)/g, "").trim();
+	const pick = leg.recommendedPick.trim();
+	const stripped = pick.replace(/^výhra\s+/i, "").replace(/\(.*?\)/g, "").trim().toLowerCase();
+	if (/\(2\)/.test(pick) || Boolean(cleanAway) && Boolean(stripped) && (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped))) return {
+		tippedTeam: cleanAway || leg.awayTeam,
+		opponentTeam: cleanHome || leg.homeTeam,
+		tippedIsAway: true
+	};
+	return {
+		tippedTeam: cleanHome || leg.homeTeam,
+		opponentTeam: cleanAway || leg.awayTeam,
+		tippedIsAway: false
+	};
+}
+function formatCzPercent(value, withSign = false) {
+	return `${withSign && value > 0 ? "+" : ""}${value.toFixed(1).replace(".", ",")} %`;
+}
+function buildStatisticalMatchReasoning(leg) {
+	const betanoOddsNum = leg.betanoOdds;
+	const marketAvgNum = leg.marketAvgOdds ?? leg.betanoOdds;
+	const betanoOdds = betanoOddsNum.toFixed(2);
+	const marketAvg = marketAvgNum.toFixed(2);
+	const oddsDiffPct = marketAvgNum > 0 ? (betanoOddsNum - marketAvgNum) / marketAvgNum * 100 : 0;
+	const impliedProb = betanoOddsNum > 0 ? 1 / betanoOddsNum * 100 : 0;
+	const realProb = leg.aiProbability;
+	const probEdge = realProb - impliedProb;
+	const oddsDiffLabel = Math.abs(oddsDiffPct) < .05 ? "shodný s průměrem trhu" : oddsDiffPct > 0 ? `o ${formatCzPercent(oddsDiffPct)} vyšší než průměr trhu` : `o ${formatCzPercent(Math.abs(oddsDiffPct))} nižší než průměr trhu`;
+	return [
+		`Kurzy a trh: Betano vypisuje na tip „${leg.recommendedPick}“ kurz ${betanoOdds}, zatímco průměr trhu je ${marketAvg} (kurz je ${oddsDiffLabel}).`,
+		``,
+		`Implikovaná vs. reálná šance: Kurz Betana implikuje pravděpodobnost ${formatCzPercent(impliedProb)}, odhadovaná reálná šance zápasu činí ${formatCzPercent(realProb)} (rozdíl ${formatCzPercent(probEdge, true)}).`,
+		``,
+		`Verdikt k tiketu: Výsledná matematická hodnota kurzu činí Value ${formatCzPercent(leg.valueScore, true)}.`
+	].join("\n");
+}
+async function extractGeminiErrorStatus(response) {
+	try {
+		const raw = await response.text();
+		if (!raw) return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+		try {
+			const parsed = JSON.parse(raw);
+			const errMsg = parsed.error?.message?.trim();
+			const errStatus = parsed.error?.status?.trim();
+			if (errMsg) return `HTTP ${response.status}${errStatus ? ` (${errStatus})` : ""}: ${errMsg}`;
+		} catch {}
+		return `HTTP ${response.status}: ${raw.slice(0, 200).trim()}`;
+	} catch {
+		return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+	}
+}
+async function fetchSingleMatchReasoning(leg, geminiApiKey) {
+	const apiKey = geminiApiKey.trim().replace(/\s+/g, "");
+	if (!apiKey) return {
+		text: buildStatisticalMatchReasoning(leg),
+		source: "stats",
+		apiStatus: "API klíč není zadaný"
+	};
+	const todayIso = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+	const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
+	const impliedPct = leg.betanoOdds > 0 ? Number((1 / leg.betanoOdds * 100).toFixed(1)) : 0;
+	const matchContext = {
+		sport: leg.sport,
+		soutez: leg.league,
+		zapas: `${leg.homeTeam} vs. ${leg.awayTeam}`,
+		domaci: leg.homeTeam,
+		hoste: leg.awayTeam,
+		tipovanyTymHrac: tippedTeam,
+		souper: opponentTeam,
+		doporucenyTip: leg.recommendedPick,
+		trh: leg.marketLabel,
+		casZapasu: leg.kickoffTime,
+		kurzBetano: leg.betanoOdds,
+		prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
+		implikovanaSancePct: impliedPct,
+		realnaSancePct: leg.aiProbability,
+		valuePct: leg.valueScore
+	};
+	const prompt = [
+		`Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Dnešní datum: ${todayIso}.`,
+		`Na základě dodaných dat zápasu a tvých znalostí o týmech/hráčích, jejich herním stylu, výhodě domácího prostředí a vzájemné síle napiš stručné, věcné české zdůvodnění přesně v této tříodstavcové struktuře (čistý text bez markdown hvězdiček a nadpisů):`,
+		``,
+		`Aktuální forma / herní styl ${tippedTeam}: zhodnoť herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
+		``,
+		`Síla soupeře ${opponentTeam}: vysvětli, proč má soupeř takový kurz, jaké má slabiny nebo jaká je vzájemná síla.`,
+		``,
+		`Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana (${leg.betanoOdds.toFixed(2)}) reálnou hodnotu (Value ${leg.valueScore.toFixed(1)} %) oproti průměru trhu (${(leg.marketAvgOdds ?? leg.betanoOdds).toFixed(2)}) a odhadované pravděpodobnosti (${leg.aiProbability.toFixed(1)} %).`,
+		``,
+		`Data zápasu: ${JSON.stringify(matchContext)}`
+	].join("\n");
+	const requestBody = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+	let lastErrorStatus = "Neznámá chyba API";
+	for (const model of GEMINI_MODEL_PRIORITY) {
+		const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), GEMINI_PER_MODEL_TIMEOUT_MS);
+		try {
+			const response = await fetch(endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				signal: controller.signal,
+				body: requestBody
+			});
+			if (!response.ok) {
+				lastErrorStatus = `${model}: ${await extractGeminiErrorStatus(response)}`;
+				continue;
+			}
+			const payload = await response.json();
+			const rawText = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
+			if (!rawText) {
+				const reason = payload.promptFeedback?.blockReason ?? payload.candidates?.[0]?.finishReason ?? "prázdná odpověď bez textu";
+				lastErrorStatus = `${model}: HTTP ${response.status} — Model nevrátil text (${reason})`;
+				continue;
+			}
+			return {
+				text: rawText,
+				source: "gemini",
+				modelUsed: model
+			};
+		} catch (err) {
+			lastErrorStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? `${model}: Timeout 12s` : `${model}: Síťová chyba (${err instanceof Error ? err.message : "Failed to fetch"})`;
+			continue;
+		} finally {
+			clearTimeout(timeoutId);
+		}
+	}
+	return {
+		text: buildStatisticalMatchReasoning(leg),
+		source: "stats",
+		apiStatus: lastErrorStatus
+	};
+}
 // src/components/MatchFeed.tsx
 var SPORT_FILTERS = [
 	"Vše",
@@ -14538,12 +14693,106 @@ function formatCompactUpdatedTime(timestampMs) {
 		month: "2-digit"
 	})} ${hhmm}`;
 }
-var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano, isDemoMode, isLoadingLive, liveError, lastUpdatedAt, onRefreshLive, onOpenSettings, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
+function matchToTicketLeg(m) {
+	return {
+		matchId: m.id,
+		sport: m.sport,
+		league: m.league,
+		homeTeam: m.homeTeam,
+		awayTeam: m.awayTeam,
+		kickoffTime: m.kickoffTime,
+		kickoffIso: m.kickoffIso,
+		recommendedPick: m.recommendedPick,
+		marketLabel: m.marketLabel,
+		betanoOdds: m.odds.betano,
+		aiProbability: m.aiProbability,
+		valueScore: m.valueScore,
+		marketAvgOdds: m.odds.marketAvg
+	};
+}
+function renderFormattedReasoning(text) {
+	const paragraphs = text.replace(/\*\*/g, "").split(/\n+/).map((p) => p.trim()).filter(Boolean);
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "mt-2 space-y-1.5 text-xs leading-relaxed text-slate-300",
+		children: paragraphs.map((para, idx) => {
+			const colonIdx = para.indexOf(":");
+			if (!(colonIdx > 0 && /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu)/i.test(para.slice(0, colonIdx)))) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: para }, idx);
+			const label = para.slice(0, colonIdx + 1);
+			const body = para.slice(colonIdx + 1).trim();
+			const isVerdict = /^Verdikt k tiketu/i.test(label);
+			return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+					className: `font-semibold ${isVerdict ? "text-emerald-300" : "text-slate-100"}`,
+					children: label
+				}),
+				" ",
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: body })
+			] }, idx);
+		})
+	});
+}
+var MatchFeed = ({ matches, selectedMatchIds, geminiApiKey, onToggleMatchOnSlip, onOpenBetano, isDemoMode, isLoadingLive, liveError, lastUpdatedAt, onRefreshLive, onOpenSettings, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const [sportFilter, setSportFilter] = (0, import_react.useState)("Vše");
 	const [timeWindow, setTimeWindow] = (0, import_react.useState)("Dnes");
 	const [onlyValueBets, setOnlyValueBets] = (0, import_react.useState)(false);
 	const [sortMode, setSortMode] = (0, import_react.useState)("value");
 	const [searchQuery, setSearchQuery] = (0, import_react.useState)("");
+	const [aiReasons, setAiReasons] = (0, import_react.useState)(() => loadCachedMatchReasons());
+	const [aiModels, setAiModels] = (0, import_react.useState)({});
+	const [statFallbackReasons, setStatFallbackReasons] = (0, import_react.useState)({});
+	const [expandedMatchIds, setExpandedMatchIds] = (0, import_react.useState)({});
+	const [loadingMatchIds, setLoadingMatchIds] = (0, import_react.useState)({});
+	const trimmedGeminiKey = geminiApiKey.trim();
+	(0, import_react.useEffect)(() => {
+		setStatFallbackReasons({});
+	}, [trimmedGeminiKey]);
+	const handleOpenOrFetchAnalysis = async (match) => {
+		if (loadingMatchIds[match.id]) return;
+		if (aiReasons[match.id] ?? statFallbackReasons[match.id]?.text) {
+			setExpandedMatchIds((prev) => ({
+				...prev,
+				[match.id]: true
+			}));
+			return;
+		}
+		setLoadingMatchIds((prev) => ({
+			...prev,
+			[match.id]: true
+		}));
+		try {
+			const result = await fetchSingleMatchReasoning(matchToTicketLeg(match), trimmedGeminiKey);
+			if (result.source === "gemini") {
+				setAiReasons((prev) => {
+					const next = {
+						...prev,
+						[match.id]: result.text
+					};
+					saveCachedMatchReasons(next);
+					return next;
+				});
+				if (result.modelUsed) setAiModels((prev) => ({
+					...prev,
+					[match.id]: result.modelUsed
+				}));
+			} else setStatFallbackReasons((prev) => ({
+				...prev,
+				[match.id]: {
+					text: result.text,
+					apiStatus: result.apiStatus
+				}
+			}));
+			setExpandedMatchIds((prev) => ({
+				...prev,
+				[match.id]: true
+			}));
+		} finally {
+			setLoadingMatchIds((prev) => {
+				const next = { ...prev };
+				delete next[match.id];
+				return next;
+			});
+		}
+	};
 	const summaryStats = (0, import_react.useMemo)(() => {
 		const positiveCount = matches.filter(isMatchPositiveValue).length;
 		return {
@@ -14867,7 +15116,48 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 										})]
 									})
 								]
-							})
+							}),
+							(() => {
+								const geminiReason = aiReasons[match.id];
+								const statFallback = statFallbackReasons[match.id];
+								const activeReason = geminiReason || statFallback?.text;
+								const isExpanded = Boolean(expandedMatchIds[match.id] && activeReason);
+								const isLoadingReason = Boolean(loadingMatchIds[match.id]);
+								if (isExpanded && activeReason) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "mt-2.5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center justify-between gap-2 text-[11px]",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+												className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? `${aiModels[match.id] ?? "gemini-3-flash-preview"} · AI analýza` : "Statistický rozbor zápasu" })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+												type: "button",
+												onClick: () => setExpandedMatchIds((prev) => ({
+													...prev,
+													[match.id]: false
+												})),
+												className: "inline-flex min-h-[28px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Sbalit" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "h-3.5 w-3.5" })]
+											})]
+										}), renderFormattedReasoning(activeReason)]
+									}), !geminiReason && statFallback?.apiStatus && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "mt-1 px-1 font-mono text-[11px] leading-snug text-slate-500",
+										children: ["Stav API: ", statFallback.apiStatus]
+									})]
+								});
+								return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "mt-2.5",
+									children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isLoadingReason,
+										onClick: () => void handleOpenOrFetchAnalysis(match),
+										className: "inline-flex min-h-[34px] items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55",
+										children: [isLoadingReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 shrink-0 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingReason ? "Načítám AI analýzu..." : activeReason ? "Zobrazit AI analýzu (uloženo)" : "Zobrazit AI analýzu" })]
+									})
+								});
+							})()
 						] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "mt-3 flex flex-row items-center gap-2 border-t border-slate-800/70 pt-3",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
@@ -14890,161 +15180,6 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 		]
 	});
 };
-// src/services/geminiReasoningService.ts
-var LOCAL_STORAGE_REASONS_KEY = "betedge_gemini_match_reasons_v1";
-var GEMINI_PER_MODEL_TIMEOUT_MS = 12e3;
-var GEMINI_MODEL_PRIORITY = ["gemini-3-flash-preview", "gemini-3.8-flash"];
-function loadCachedMatchReasons() {
-	if (typeof window === "undefined") return {};
-	try {
-		const raw = window.localStorage.getItem(LOCAL_STORAGE_REASONS_KEY);
-		if (!raw) return {};
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-		return {};
-	} catch {
-		return {};
-	}
-}
-function saveCachedMatchReasons(reasons) {
-	if (typeof window === "undefined") return;
-	try {
-		window.localStorage.setItem(LOCAL_STORAGE_REASONS_KEY, JSON.stringify(reasons));
-	} catch {}
-}
-function resolveTippedAndOpponent(leg) {
-	const cleanHome = leg.homeTeam.replace(/\(.*?\)/g, "").trim();
-	const cleanAway = leg.awayTeam.replace(/\(.*?\)/g, "").trim();
-	const pick = leg.recommendedPick.trim();
-	const stripped = pick.replace(/^výhra\s+/i, "").replace(/\(.*?\)/g, "").trim().toLowerCase();
-	if (/\(2\)/.test(pick) || Boolean(cleanAway) && Boolean(stripped) && (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped))) return {
-		tippedTeam: cleanAway || leg.awayTeam,
-		opponentTeam: cleanHome || leg.homeTeam,
-		tippedIsAway: true
-	};
-	return {
-		tippedTeam: cleanHome || leg.homeTeam,
-		opponentTeam: cleanAway || leg.awayTeam,
-		tippedIsAway: false
-	};
-}
-function formatCzPercent(value, withSign = false) {
-	return `${withSign && value > 0 ? "+" : ""}${value.toFixed(1).replace(".", ",")} %`;
-}
-function buildStatisticalMatchReasoning(leg) {
-	const betanoOddsNum = leg.betanoOdds;
-	const marketAvgNum = leg.marketAvgOdds ?? leg.betanoOdds;
-	const betanoOdds = betanoOddsNum.toFixed(2);
-	const marketAvg = marketAvgNum.toFixed(2);
-	const oddsDiffPct = marketAvgNum > 0 ? (betanoOddsNum - marketAvgNum) / marketAvgNum * 100 : 0;
-	const impliedProb = betanoOddsNum > 0 ? 1 / betanoOddsNum * 100 : 0;
-	const realProb = leg.aiProbability;
-	const probEdge = realProb - impliedProb;
-	const oddsDiffLabel = Math.abs(oddsDiffPct) < .05 ? "shodný s průměrem trhu" : oddsDiffPct > 0 ? `o ${formatCzPercent(oddsDiffPct)} vyšší než průměr trhu` : `o ${formatCzPercent(Math.abs(oddsDiffPct))} nižší než průměr trhu`;
-	return [
-		`Kurzy a trh: Betano vypisuje na tip „${leg.recommendedPick}“ kurz ${betanoOdds}, zatímco průměr trhu je ${marketAvg} (kurz je ${oddsDiffLabel}).`,
-		``,
-		`Implikovaná vs. reálná šance: Kurz Betana implikuje pravděpodobnost ${formatCzPercent(impliedProb)}, odhadovaná reálná šance zápasu činí ${formatCzPercent(realProb)} (rozdíl ${formatCzPercent(probEdge, true)}).`,
-		``,
-		`Verdikt k tiketu: Výsledná matematická hodnota kurzu činí Value ${formatCzPercent(leg.valueScore, true)}.`
-	].join("\n");
-}
-async function extractGeminiErrorStatus(response) {
-	try {
-		const raw = await response.text();
-		if (!raw) return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-		try {
-			const parsed = JSON.parse(raw);
-			const errMsg = parsed.error?.message?.trim();
-			const errStatus = parsed.error?.status?.trim();
-			if (errMsg) return `HTTP ${response.status}${errStatus ? ` (${errStatus})` : ""}: ${errMsg}`;
-		} catch {}
-		return `HTTP ${response.status}: ${raw.slice(0, 200).trim()}`;
-	} catch {
-		return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-	}
-}
-async function fetchSingleMatchReasoning(leg, geminiApiKey) {
-	const apiKey = geminiApiKey.trim().replace(/\s+/g, "");
-	if (!apiKey) return {
-		text: buildStatisticalMatchReasoning(leg),
-		source: "stats",
-		apiStatus: "API klíč není zadaný"
-	};
-	const todayIso = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-	const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
-	const impliedPct = leg.betanoOdds > 0 ? Number((1 / leg.betanoOdds * 100).toFixed(1)) : 0;
-	const matchContext = {
-		sport: leg.sport,
-		soutez: leg.league,
-		zapas: `${leg.homeTeam} vs. ${leg.awayTeam}`,
-		domaci: leg.homeTeam,
-		hoste: leg.awayTeam,
-		tipovanyTymHrac: tippedTeam,
-		souper: opponentTeam,
-		doporucenyTip: leg.recommendedPick,
-		trh: leg.marketLabel,
-		casZapasu: leg.kickoffTime,
-		kurzBetano: leg.betanoOdds,
-		prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
-		implikovanaSancePct: impliedPct,
-		realnaSancePct: leg.aiProbability,
-		valuePct: leg.valueScore
-	};
-	const prompt = [
-		`Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Dnešní datum: ${todayIso}.`,
-		`Na základě dodaných dat zápasu a tvých znalostí o týmech/hráčích, jejich herním stylu, výhodě domácího prostředí a vzájemné síle napiš stručné, věcné české zdůvodnění přesně v této tříodstavcové struktuře (čistý text bez markdown hvězdiček a nadpisů):`,
-		``,
-		`Aktuální forma / herní styl ${tippedTeam}: zhodnoť herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
-		``,
-		`Síla soupeře ${opponentTeam}: vysvětli, proč má soupeř takový kurz, jaké má slabiny nebo jaká je vzájemná síla.`,
-		``,
-		`Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana (${leg.betanoOdds.toFixed(2)}) reálnou hodnotu (Value ${leg.valueScore.toFixed(1)} %) oproti průměru trhu (${(leg.marketAvgOdds ?? leg.betanoOdds).toFixed(2)}) a odhadované pravděpodobnosti (${leg.aiProbability.toFixed(1)} %).`,
-		``,
-		`Data zápasu: ${JSON.stringify(matchContext)}`
-	].join("\n");
-	const requestBody = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-	let lastErrorStatus = "Neznámá chyba API";
-	for (const model of GEMINI_MODEL_PRIORITY) {
-		const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), GEMINI_PER_MODEL_TIMEOUT_MS);
-		try {
-			const response = await fetch(endpoint, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				signal: controller.signal,
-				body: requestBody
-			});
-			if (!response.ok) {
-				lastErrorStatus = `${model}: ${await extractGeminiErrorStatus(response)}`;
-				continue;
-			}
-			const payload = await response.json();
-			const rawText = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
-			if (!rawText) {
-				const reason = payload.promptFeedback?.blockReason ?? payload.candidates?.[0]?.finishReason ?? "prázdná odpověď bez textu";
-				lastErrorStatus = `${model}: HTTP ${response.status} — Model nevrátil text (${reason})`;
-				continue;
-			}
-			return {
-				text: rawText,
-				source: "gemini",
-				modelUsed: model
-			};
-		} catch (err) {
-			lastErrorStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? `${model}: Timeout 12s` : `${model}: Síťová chyba (${err instanceof Error ? err.message : "Failed to fetch"})`;
-			continue;
-		} finally {
-			clearTimeout(timeoutId);
-		}
-	}
-	return {
-		text: buildStatisticalMatchReasoning(leg),
-		source: "stats",
-		apiStatus: lastErrorStatus
-	};
-}
 // src/components/TicketGenerator.tsx
 var ALL_SPORTS = [
 	"Fotbal",
@@ -15145,8 +15280,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const [exactLegsCount, setExactLegsCount] = (0, import_react.useState)(null);
 	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
 	const [selectedSports, setSelectedSports] = (0, import_react.useState)(ALL_SPORTS);
-	const [showOtherSports, setShowOtherSports] = (0, import_react.useState)(false);
-	const [filtersCollapsed, setFiltersCollapsed] = (0, import_react.useState)(false);
+	const [filtersCollapsed, setFiltersCollapsed] = (0, import_react.useState)(true);
 	const [variationIndex, setVariationIndex] = (0, import_react.useState)(0);
 	const [customStakeInput, setCustomStakeInput] = (0, import_react.useState)("5");
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
@@ -15180,7 +15314,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	(0, import_react.useEffect)(() => {
 		if (generated) setCustomStakeInput(String(generated.recommendedStake));
 	}, [generated]);
-	const { primarySports, otherSports, sportCounts } = (0, import_react.useMemo)(() => {
+	const { availableSports, sportCounts } = (0, import_react.useMemo)(() => {
 		const counts = /* @__PURE__ */ new Map();
 		for (const s of ALL_SPORTS) counts.set(s, {
 			totalNonNeg: 0,
@@ -15193,10 +15327,8 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			entry.totalNonNeg += 1;
 			if (m.aiProbability >= minMatchProbability) entry.eligible += 1;
 		}
-		const withMatches = ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0);
 		return {
-			primarySports: withMatches.length > 0 ? withMatches : ALL_SPORTS,
-			otherSports: withMatches.length > 0 ? ALL_SPORTS.filter((s) => !withMatches.includes(s)) : [],
+			availableSports: ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0),
 			sportCounts: counts
 		};
 	}, [matches, minMatchProbability]);
@@ -15262,7 +15394,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const toggleSport = (sport) => {
 		setSelectedSports((prev) => {
 			if (prev.includes(sport)) {
-				if (prev.length === 1) return prev;
+				if (prev.filter((s) => availableSports.includes(s)).length <= 1) return prev;
 				return prev.filter((s) => s !== sport);
 			}
 			return [...prev, sport];
@@ -15323,7 +15455,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const isLowProbCapped = exactLegsCount === null && ticketStyle === "smart_value" && minMatchProbability < 45;
 	const riskTextClass = generated ? RISK_TEXT_STYLES[generated.estimatedRisk] : "";
 	const customMatches = (0, import_react.useMemo)(() => matches.filter((m) => m.isCustom), [matches]);
-	const comboIndexLabel = generated && generated.availableCombosCount > 1 ? ` (${variationIndex % generated.availableCombosCount + 1}/${generated.availableCombosCount})` : "";
+	const currentComboPosition = generated && generated.availableCombosCount > 1 ? variationIndex % generated.availableCombosCount + 1 : 1;
 	const legsSummaryLabel = exactLegsCount === null ? "Auto" : exactLegsCount === 1 ? "1 zápas" : `${exactLegsCount} zápasy`;
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "space-y-4 sm:space-y-5",
@@ -15527,24 +15659,15 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "border-t border-slate-800/80 pt-3.5",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex items-center justify-between gap-2",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-									className: "text-xs font-semibold text-slate-300",
-									children: "Zahrnuté sporty"
-								}), otherSports.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-									type: "button",
-									onClick: () => setShowOtherSports((v) => !v),
-									className: "inline-flex items-center gap-1 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-										"Další sporty (",
-										otherSports.length,
-										")"
-									] }), showOtherSports ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "h-3.5 w-3.5" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "h-3.5 w-3.5" })]
-								})]
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "block text-xs font-semibold text-slate-300",
+								children: "Zahrnuté sporty"
+							}), availableSports.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "mt-2 text-xs text-slate-400",
+								children: "Momentálně nejsou dostupné žádné zápasy pro generování tiketu."
+							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 								className: "mt-2 grid grid-cols-2 gap-1.5",
-								children: [primarySports.map((sport) => {
+								children: availableSports.map((sport) => {
 									const active = selectedSports.includes(sport);
 									const count = sportCounts.get(sport)?.eligible ?? 0;
 									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
@@ -15559,22 +15682,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 											children: count
 										})]
 									}, sport);
-								}), showOtherSports && otherSports.map((sport) => {
-									const active = selectedSports.includes(sport);
-									const count = sportCounts.get(sport)?.eligible ?? 0;
-									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "button",
-										onClick: () => toggleSport(sport),
-										className: `flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${active ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-slate-800/80 bg-[#090D16] text-slate-500 hover:text-slate-300"}`,
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "truncate",
-											children: sport
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "font-mono text-[11px] tabular-nums opacity-70",
-											children: count
-										})]
-									}, sport);
-								})]
+								})
 							})]
 						}),
 						customMatches.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -15663,7 +15771,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 					className: "rounded-2xl border border-emerald-500/40 bg-[#111827] p-4 sm:p-5",
 					children: [
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex flex-col gap-3 border-b border-slate-800/80 pb-3.5 sm:flex-row sm:items-center sm:justify-between",
+							className: "flex flex-wrap items-center justify-between gap-2.5 border-b border-slate-800/80 pb-3.5",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
 								children: [
@@ -15701,7 +15809,10 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 									generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů",
 									")"
 								]
-							})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							})] }), generated.availableCombosCount <= 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "inline-flex min-h-[36px] items-center self-start rounded-xl border border-slate-800 bg-[#090D16] px-3 py-1.5 text-xs font-medium text-slate-500 sm:self-auto",
+								children: "Jediná dostupná kombinace"
+							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								role: "group",
 								"aria-label": "Listování kombinacemi tiketu",
 								className: "inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto",
@@ -15709,27 +15820,26 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 										type: "button",
 										onClick: handlePrevVariation,
-										disabled: generated.availableCombosCount <= 1,
 										"aria-label": "Předchozí kombinace",
 										title: "Předchozí kombinace",
-										className: "inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45",
+										className: "inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white",
 										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronLeft, { className: "h-4 w-4" })
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "button",
-										onClick: handleNextVariation,
-										disabled: generated.availableCombosCount <= 1,
-										title: generated.availableCombosCount <= 1 ? "Pro tento filtr není dostupná jiná kombinace" : "Další kombinace zápasů",
-										className: "inline-flex min-h-[40px] items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Jiná kombinace", comboIndexLabel] })]
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "px-3 py-1.5 font-mono text-xs font-semibold tabular-nums text-slate-200 whitespace-nowrap",
+										children: [
+											"Kombinace ",
+											currentComboPosition,
+											" / ",
+											generated.availableCombosCount
+										]
 									}),
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 										type: "button",
 										onClick: handleNextVariation,
-										disabled: generated.availableCombosCount <= 1,
 										"aria-label": "Další kombinace",
 										title: "Další kombinace",
-										className: "inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45",
+										className: "inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white",
 										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronRight, { className: "h-4 w-4" })
 									})
 								]
@@ -18016,6 +18126,7 @@ function App() {
 					activeTab === "matches" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MatchFeed, {
 						matches: activeMatches,
 						selectedMatchIds: slipMatchIds,
+						geminiApiKey: (settings.geminiApiKey ?? "").trim(),
 						onToggleMatchOnSlip: handleToggleMatchOnSlip,
 						onOpenBetano: handleOpenBetano,
 						isDemoMode: settings.demoMode,
