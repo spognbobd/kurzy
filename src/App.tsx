@@ -250,7 +250,7 @@ export default function App() {
           <TicketGenerator
             matches={activeMatches}
             currentBankroll={currentBankroll}
-            geminiApiKey={settings.geminiApiKey ?? ''}
+            geminiApiKey={(settings.geminiApiKey ?? '').trim()}
             onSaveTicket={handleSaveTicket}
             onOpenBetano={handleOpenBetano}
             onOpenCustomMatchModal={() => setIsCustomModalOpen(true)}

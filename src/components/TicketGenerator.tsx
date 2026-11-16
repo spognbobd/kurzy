@@ -822,7 +822,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               <div className="flex items-center justify-between gap-2 text-[11px]">
                                 <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
                                   <Sparkles className="h-3 w-3 shrink-0" />
-                                  <span>Gemini 3.8 Flash · AI analýza zápasu</span>
+                                  <span>Gemini AI · Analýza zápasu</span>
                                 </span>
                               </div>
                               {renderFormattedGeminiReasoning(geminiReason)}

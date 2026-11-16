@@ -2,6 +2,12 @@ import { TicketLeg } from '../types/betting';
 
 const LOCAL_STORAGE_REASONS_KEY = 'betedge_gemini_match_reasons_v1';
 
+const GEMINI_MODEL_FALLBACK_CHAIN = [
+  'gemini-3.8-flash',
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
+] as const;
+
 export function loadCachedMatchReasons(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   try {
@@ -71,8 +77,9 @@ export async function fetchSingleMatchReasoning(
   geminiApiKey: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const trimmedKey = geminiApiKey.trim();
-  if (!trimmedKey) {
+  // Always trim and strip stray whitespace/newlines from keys loaded out of localStorage
+  const apiKey = geminiApiKey.trim().replace(/\s+/g, '');
+  if (!apiKey) {
     throw new Error('Chybí Gemini API klíč.');
   }
 
@@ -100,7 +107,7 @@ export async function fetchSingleMatchReasoning(
   };
 
   const prompt = [
-    `Dnešní datum: ${todayIso}.`,
+    `Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Dnešní datum: ${todayIso}.`,
     `Na základě dodaných dat zápasu a tvých znalostí o týmech/hráčích, jejich herním stylu, výhodě domácího prostředí a vzájemné síle napiš stručné, věcné české zdůvodnění přesně v této tříodstavcové struktuře (čistý text bez markdown hvězdiček a nadpisů):`,
     ``,
     `Aktuální forma / herní styl ${tippedTeam}: zhodnoť dodanou bilanci, herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
@@ -112,54 +119,87 @@ export async function fetchSingleMatchReasoning(
     `Data zápasu: ${JSON.stringify(matchContext)}`,
   ].join('\n');
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(
-    trimmedKey
-  )}`;
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal,
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [
-          {
-            text: 'Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Vycházíš ze zadaných kurzových a statistických dat a ze svých znalostí o sportovním stylu a síle týmů/hráčů. Vždy dodrž přesně tříodstavcovou šablonu (Aktuální forma / herní styl ..., Síla soupeře ..., Verdikt k tiketu:) jako čistý text bez markdownu.',
-          },
-        ],
+  // Standard clean REST body with only `contents`
+  const requestBody = JSON.stringify({
+    contents: [
+      {
+        parts: [{ text: prompt }],
       },
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: prompt }],
-        },
-      ],
-    }),
+    ],
   });
 
-  const payload = (await response.json()) as GeminiRestResponse;
+  let lastErrorMessage = 'Nepodařilo se spojit s Gemini REST API.';
 
-  if (!response.ok) {
-    const errMsg = payload.error?.message || `HTTP ${response.status}`;
-    if (response.status === 400 || response.status === 401 || response.status === 403) {
-      throw new Error(`Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
+  for (let i = 0; i < GEMINI_MODEL_FALLBACK_CHAIN.length; i++) {
+    const model = GEMINI_MODEL_FALLBACK_CHAIN[i];
+    const hasNextFallback = i < GEMINI_MODEL_FALLBACK_CHAIN.length - 1;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: requestBody,
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      lastErrorMessage = `Síťová chyba při volání ${model} (${msg}). Zkontrolujte připojení nebo blokování požadavků v prohlížeči.`;
+      if (hasNextFallback) continue;
+      throw new Error(lastErrorMessage);
     }
-    if (response.status === 429) {
-      throw new Error('Překročen limit požadavků Gemini API (429). Počkejte prosím chvíli a zkuste to znovu.');
+
+    let payload: GeminiRestResponse = {};
+    try {
+      payload = (await response.json()) as GeminiRestResponse;
+    } catch {
+      payload = {};
     }
-    throw new Error(`Gemini REST API chyba: ${errMsg}`);
+
+    if (!response.ok) {
+      const errMsg = payload.error?.message || `HTTP ${response.status}`;
+
+      if (response.status === 429) {
+        throw new Error(
+          'Překročen limit požadavků Gemini API (429). Počkejte prosím chvíli a zkuste to znovu.'
+        );
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(
+          `Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`
+        );
+      }
+
+      lastErrorMessage = `Gemini API (${model}) vrátilo chybu ${response.status}: ${errMsg}`;
+      if ((response.status === 404 || response.status === 400) && hasNextFallback) {
+        continue;
+      }
+
+      if (response.status === 400 && /api key/i.test(errMsg)) {
+        throw new Error(`Neplatný Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
+      }
+      throw new Error(lastErrorMessage);
+    }
+
+    const rawText =
+      payload.candidates?.[0]?.content?.parts
+        ?.map((p) => p.text ?? '')
+        .join('\n')
+        .replace(/\*\*/g, '')
+        .trim() ?? '';
+
+    if (rawText) {
+      return rawText;
+    }
+
+    lastErrorMessage = `Model ${model} nevrátil žádný text analýzy.`;
+    if (hasNextFallback) continue;
   }
 
-  const rawText =
-    payload.candidates?.[0]?.content?.parts
-      ?.map((p) => p.text ?? '')
-      .join('\n')
-      .replace(/\*\*/g, '')
-      .trim() ?? '';
-
-  if (!rawText) {
-    throw new Error('Gemini API nevrátilo žádný text analýzy.');
-  }
-
-  return rawText;
+  throw new Error(lastErrorMessage);
 }

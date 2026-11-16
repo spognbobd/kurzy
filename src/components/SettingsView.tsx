@@ -35,7 +35,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
-  const [geminiKey, setGeminiKey] = useState(settings.geminiApiKey ?? '');
+  const [geminiKey, setGeminiKey] = useState((settings.geminiApiKey ?? '').trim());
   const [bankroll, setBankroll] = useState<number>(settings.initialBankroll);
   const [demoMode, setDemoMode] = useState(settings.demoMode);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -43,7 +43,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     setOddsKey(settings.theOddsApiKey);
     setSportsKey(settings.apiSportsKey);
-    setGeminiKey(settings.geminiApiKey ?? '');
+    setGeminiKey((settings.geminiApiKey ?? '').trim());
     setBankroll(settings.initialBankroll);
     setDemoMode(settings.demoMode);
   }, [settings]);
