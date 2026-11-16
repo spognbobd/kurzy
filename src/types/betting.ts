@@ -55,6 +55,7 @@ export interface TicketLeg {
   homeTeam: string;
   awayTeam: string;
   kickoffTime: string;
+  kickoffIso?: string;
   recommendedPick: string;
   marketLabel: string;
   betanoOdds: number;
@@ -83,10 +84,14 @@ export interface Ticket {
   source: 'generator' | 'manual';
 }
 
+export type NotificationLeadMinutes = 15 | 0;
+
 export interface AppSettings {
   theOddsApiKey: string;
   apiSportsKey: string;
   geminiApiKey?: string;
   demoMode: boolean;
   initialBankroll: number;
+  notificationsEnabled?: boolean;
+  notificationLeadMinutes?: NotificationLeadMinutes;
 }

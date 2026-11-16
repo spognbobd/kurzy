@@ -1,31 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Check,
   ChevronDown,
   ExternalLink,
-  Plus,
-  PlusCircle,
   RefreshCw,
   Search,
   SlidersHorizontal,
   Trash2,
   TrendingUp,
-  X,
 } from 'lucide-react';
-import {
-  FormResult,
-  MatchAnalysis,
-  SportFilter,
-  TimeWindow,
-} from '../types/betting';
-import {
-  BETANO_HOME_URL,
-  formatOdds,
-  formatPercent,
-  formatUpdateTimeLabel,
-} from '../utils/analyticsEngine';
-import { PWAInstallButton } from './PWAInstallButton';
+import { MatchAnalysis, SportFilter, TimeWindow } from '../types/betting';
+import { BETANO_HOME_URL, formatOdds, formatPercent } from '../utils/analyticsEngine';
 
 interface MatchFeedProps {
   matches: MatchAnalysis[];
@@ -57,51 +43,32 @@ const TIME_WINDOWS: (TimeWindow | 'Vše')[] = ['Dnes', 'Zítra', 'Víkend', 'Vš
 
 type SortMode = 'probability' | 'value' | 'kickoff' | 'lowest_odds';
 
-const SORT_OPTIONS: { id: SortMode; label: string; description: string }[] = [
-  {
-    id: 'probability',
-    label: 'Nejvyšší pravděpodobnost',
-    description: 'AI šance % od nejvyšší po nejnižší · bezpeční favorité',
-  },
-  {
-    id: 'value',
-    label: 'Nejvyšší Value',
-    description: '+EV % od nejvyššího po nejnižší',
-  },
-  {
-    id: 'kickoff',
-    label: 'Čas výkopu',
-    description: 'Od nejbližších nadcházejících zápasů',
-  },
-  {
-    id: 'lowest_odds',
-    label: 'Nejnižší kurz',
-    description: 'Od největších favoritů s kurzem blízko 1.00',
-  },
+const SORT_OPTIONS: { id: SortMode; label: string }[] = [
+  { id: 'value', label: 'Nejvyšší Value' },
+  { id: 'probability', label: 'Nejvyšší pravděpodobnost' },
+  { id: 'kickoff', label: 'Čas výkopu' },
+  { id: 'lowest_odds', label: 'Nejnižší kurz' },
 ];
 
-function FormSequence({ label, form }: { label: string; form: FormResult[] }) {
-  return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="truncate text-slate-400">{label}</span>
-      <div className="flex items-center gap-1 font-mono tabular-nums shrink-0" aria-label={`Forma ${form.join(' ')}`}>
-        {form.map((res, idx) => (
-          <span
-            key={idx}
-            className={`inline-flex h-5 w-5 items-center justify-center rounded text-[11px] font-semibold ${
-              res === 'V'
-                ? 'bg-emerald-500/15 text-emerald-300'
-                : res === 'R'
-                ? 'bg-amber-500/15 text-amber-300'
-                : 'bg-rose-500/15 text-rose-300'
-            }`}
-          >
-            {res}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+function isMatchPositiveValue(m: MatchAnalysis): boolean {
+  return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0;
+}
+
+function getKickoffTimestamp(m: MatchAnalysis): number {
+  const parsed = Date.parse(m.kickoffIso);
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+}
+
+function formatCompactUpdatedTime(timestampMs: number | null): string | null {
+  if (!timestampMs || !Number.isFinite(timestampMs)) return null;
+  const dt = new Date(timestampMs);
+  const hhmm = dt.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+  const isToday = dt.toDateString() === new Date().toDateString();
+  if (isToday) {
+    return `Aktualizováno ${hhmm}`;
+  }
+  const dateStr = dt.toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' });
+  return `Aktualizováno ${dateStr} ${hhmm}`;
 }
 
 export const MatchFeed: React.FC<MatchFeedProps> = ({
@@ -122,43 +89,13 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   const [timeWindow, setTimeWindow] = useState<TimeWindow | 'Vše'>('Dnes');
   const [onlyValueBets, setOnlyValueBets] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('value');
-  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const sortContainerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!isSortMenuOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsSortMenuOpen(false);
-    };
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        sortContainerRef.current &&
-        !sortContainerRef.current.contains(e.target as Node)
-      ) {
-        setIsSortMenuOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isSortMenuOpen]);
 
   const summaryStats = useMemo(() => {
-    const positive = matches.filter((m) => m.valueScore > 0);
-    const maxVal = positive.length > 0 ? Math.max(...positive.map((m) => m.valueScore)) : 0;
-    const avgVal =
-      positive.length > 0
-        ? positive.reduce((sum, m) => sum + m.valueScore, 0) / positive.length
-        : 0;
+    const positiveCount = matches.filter(isMatchPositiveValue).length;
     return {
       totalMatches: matches.length,
-      valueCount: positive.length,
-      maxVal,
-      avgVal,
+      valueCount: positiveCount,
     };
   }, [matches]);
 
@@ -167,7 +104,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
     const list = matches.filter((m) => {
       if (sportFilter !== 'Vše' && m.sport !== sportFilter) return false;
       if (timeWindow !== 'Vše' && m.timeWindow !== timeWindow) return false;
-      if (onlyValueBets && m.valueScore <= 0) return false;
+      if (onlyValueBets && !isMatchPositiveValue(m)) return false;
       if (q) {
         const hay = `${m.homeTeam} ${m.awayTeam} ${m.league} ${m.recommendedPick}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -175,130 +112,112 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
       return true;
     });
 
-    const copy = [...list];
+    const sorted = [...list];
     switch (sortMode) {
       case 'probability':
-        return copy.sort(
-          (a, b) => b.aiProbability - a.aiProbability || b.valueScore - a.valueScore
+        sorted.sort(
+          (a, b) =>
+            Number(b.aiProbability) - Number(a.aiProbability) ||
+            Number(b.valueScore) - Number(a.valueScore)
         );
+        break;
       case 'value':
-        return copy.sort(
-          (a, b) => b.valueScore - a.valueScore || b.aiProbability - a.aiProbability
+        sorted.sort(
+          (a, b) =>
+            Number(b.valueScore) - Number(a.valueScore) ||
+            Number(b.aiProbability) - Number(a.aiProbability)
         );
+        break;
       case 'lowest_odds':
-        return copy.sort(
-          (a, b) => a.odds.betano - b.odds.betano || b.aiProbability - a.aiProbability
+        sorted.sort(
+          (a, b) =>
+            Number(a.odds.betano) - Number(b.odds.betano) ||
+            Number(b.aiProbability) - Number(a.aiProbability)
         );
+        break;
       case 'kickoff':
       default:
-        return copy.sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
+        sorted.sort(
+          (a, b) =>
+            getKickoffTimestamp(a) - getKickoffTimestamp(b) ||
+            Number(b.valueScore) - Number(a.valueScore)
+        );
+        break;
     }
+    return sorted;
   }, [matches, sportFilter, timeWindow, onlyValueBets, sortMode, searchQuery]);
 
-  const activeSortOption =
-    SORT_OPTIONS.find((opt) => opt.id === sortMode) ?? SORT_OPTIONS[1];
+  const compactTimeLabel = formatCompactUpdatedTime(lastUpdatedAt);
+  const statusPrefix = isDemoMode
+    ? 'Demo režim'
+    : compactTimeLabel ?? 'Živá data';
 
   return (
-    <div className="space-y-6">
-      {/* Workspace Header & KPI Summary Row */}
-      <section className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-            <span>{isDemoMode ? 'Demo režim s ukázkovými daty' : 'Živá data The Odds API'}</span>
-            {!isDemoMode && lastUpdatedAt && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono tabular-nums text-emerald-300">
-                  {formatUpdateTimeLabel(lastUpdatedAt)}
-                </span>
-              </>
-            )}
-            <span aria-hidden="true">·</span>
-            <span>Porovnání Betano, Tipsport a průměru trhu</span>
-          </div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl text-balance">
-            Vyhledávač hodnotných sázek
-          </h1>
+    <div className="space-y-3.5 sm:space-y-4">
+      {/* Compact Single-Row Status & Action Bar */}
+      <section
+        aria-label="Stav kurzů a rychlé akce"
+        className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800/90 bg-[#111827] px-3.5 py-2.5 sm:px-4"
+      >
+        <div className="min-w-0 font-mono text-xs tabular-nums text-slate-300">
+          <span className="font-semibold text-emerald-300">{statusPrefix}</span>
+          <span className="mx-1.5 text-slate-600" aria-hidden="true">
+            ·
+          </span>
+          <span>
+            <strong className="text-slate-100">{summaryStats.valueCount}</strong> Value Betů z{' '}
+            {summaryStats.totalMatches}
+          </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={isDemoMode ? onOpenSettings : onRefreshLive}
+            disabled={!isDemoMode && isLoadingLive}
+            aria-label={isDemoMode ? 'Připojit API klíče' : 'Aktualizovat kurzy z API'}
+            title={isDemoMode ? 'Připojit API klíče v Nastavení' : 'Aktualizovat kurzy z API'}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] text-emerald-400 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {isDemoMode ? (
+              <SlidersHorizontal className="h-4 w-4" />
+            ) : (
+              <RefreshCw className={`h-4 w-4 ${isLoadingLive ? 'animate-spin' : ''}`} />
+            )}
+          </button>
+
           <button
             type="button"
             onClick={onOpenCustomMatchModal}
-            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[40px] items-center justify-center rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap"
           >
-            <PlusCircle className="h-4 w-4 shrink-0" />
-            <span>+ Vlastní zápas (Ping-pong / ostatní)</span>
+            + Vlastní zápas
           </button>
-          <PWAInstallButton variant="compact" />
-          {!isDemoMode ? (
-            <button
-              type="button"
-              onClick={onRefreshLive}
-              disabled={isLoadingLive}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0"
-            >
-              <RefreshCw className={`h-4 w-4 text-emerald-400 ${isLoadingLive ? 'animate-spin' : ''}`} />
-              <span>{isLoadingLive ? 'Stahuji kurzy...' : 'Aktualizovat kurzy z API'}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700/90 bg-slate-900/90 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100 whitespace-nowrap shrink-0"
-            >
-              <SlidersHorizontal className="h-4 w-4 text-emerald-400" />
-              <span>Připojit API klíče</span>
-            </button>
-          )}
         </div>
       </section>
 
       {liveError && (
         <div
           role="alert"
-          className="flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200 sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-200 sm:flex-row sm:items-center sm:justify-between"
         >
           <span>{liveError}</span>
           <button
             type="button"
             onClick={onOpenSettings}
-            className="text-xs font-semibold text-amber-300 underline hover:text-amber-100 whitespace-nowrap self-start sm:self-auto"
+            className="font-semibold text-amber-300 underline hover:text-amber-100 whitespace-nowrap self-start sm:self-auto"
           >
             Zkontrolovat nastavení API
           </button>
         </div>
       )}
 
-      {/* 3-Metric Analytical Summary Strip */}
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4">
-          <p className="text-xs font-medium text-slate-400">Nalezené Value Bety</p>
-          <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-emerald-400">
-            {summaryStats.valueCount}{' '}
-            <span className="text-sm font-normal text-slate-400">z {summaryStats.totalMatches} zápasů</span>
-          </p>
-        </div>
-        <div className="rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4">
-          <p className="text-xs font-medium text-slate-400">Nejvyšší dnešní Value skóre</p>
-          <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-100">
-            {formatPercent(summaryStats.maxVal, true)}
-          </p>
-        </div>
-        <div className="rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4">
-          <p className="text-xs font-medium text-slate-400">Průměrná matematická výhoda (+EV)</p>
-          <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-100">
-            {formatPercent(summaryStats.avgVal, true)}
-          </p>
-        </div>
-      </section>
-
-      {/* Filter Toolbar */}
-      <section className="space-y-3 rounded-2xl border border-slate-800/90 bg-[#111827] p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      {/* Compact Filter Toolbar */}
+      <section className="space-y-2.5 rounded-2xl border border-slate-800/90 bg-[#111827] p-3.5 sm:p-4">
+        <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
           {/* Sport Filters */}
           <div
-            className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0"
+            className="flex items-center gap-1.5 overflow-x-auto pb-0.5 lg:pb-0"
             role="tablist"
             aria-label="Filtr sportů"
           >
@@ -311,7 +230,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setSportFilter(sport)}
-                  className={`min-h-[40px] rounded-xl px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  className={`min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-emerald-500 text-slate-950 font-semibold'
                       : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-slate-100'
@@ -339,7 +258,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setTimeWindow(win)}
-                  className={`min-h-[36px] rounded-lg px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  className={`min-h-[34px] rounded-lg px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-slate-800 text-slate-50 shadow-sm'
                       : 'text-slate-400 hover:text-slate-200'
@@ -352,26 +271,27 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           </div>
         </div>
 
-        {/* Search & Secondary Controls */}
-        <div className="flex flex-col gap-3 border-t border-slate-800/80 pt-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative flex-1 max-w-md">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+        {/* Search, +EV Toggle & Reliable Native Sort Selector */}
+        <div className="flex flex-col gap-2.5 border-t border-slate-800/80 pt-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative flex-1 sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
             <input
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Hledat tým, hráče nebo ligu..."
-              className="min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] pl-10 pr-4 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+              className="min-h-[40px] w-full rounded-xl border border-slate-800 bg-[#090D16] pl-9 pr-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              aria-pressed={onlyValueBets}
               onClick={() => setOnlyValueBets((v) => !v)}
-              className={`inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                 onlyValueBets
-                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                  ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300'
                   : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700'
               }`}
             >
@@ -379,97 +299,21 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               <span>Jen pozitivní Value (+EV)</span>
             </button>
 
-            <div ref={sortContainerRef} className="relative">
-              <button
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded={isSortMenuOpen}
-                onClick={() => setIsSortMenuOpen((open) => !open)}
-                className={`inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  isSortMenuOpen
-                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
-                    : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
-                }`}
+            <div className="relative flex-1 sm:flex-initial">
+              <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-400" />
+              <select
+                aria-label="Seřadit zápasy podle"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as SortMode)}
+                className="min-h-[40px] w-full appearance-none rounded-xl border border-slate-800 bg-[#090D16] pl-8 pr-8 text-xs font-medium text-slate-200 transition-colors hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none"
               >
-                <ArrowUpDown className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Řazeno: {activeSortOption.label}</span>
-                <ChevronDown
-                  className={`h-3.5 w-3.5 text-slate-400 transition-transform ${
-                    isSortMenuOpen ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-
-              {isSortMenuOpen && (
-                <>
-                  {/* Mobile backdrop */}
-                  <div
-                    className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs sm:hidden"
-                    onClick={() => setIsSortMenuOpen(false)}
-                    aria-hidden="true"
-                  />
-
-                  {/* Responsive menu: bottom sheet on mobile, anchored dropdown on desktop */}
-                  <div
-                    role="listbox"
-                    aria-label="Způsob řazení zápasů"
-                    className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-slate-800 bg-[#111827] p-4 pb-6 shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 sm:rounded-2xl sm:border sm:p-2"
-                  >
-                    <div className="mb-3 flex items-center justify-between border-b border-slate-800/80 pb-2.5 sm:hidden">
-                      <span className="font-display text-sm font-bold text-slate-100">
-                        Seřadit zápasy podle
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsSortMenuOpen(false)}
-                        aria-label="Zavřít nabídku řazení"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-100"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-
-                    <div className="space-y-1">
-                      {SORT_OPTIONS.map((option) => {
-                        const active = sortMode === option.id;
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            role="option"
-                            aria-selected={active}
-                            onClick={() => {
-                              setSortMode(option.id);
-                              setIsSortMenuOpen(false);
-                            }}
-                            className={`flex w-full items-start justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${
-                              active
-                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
-                                : 'border-transparent bg-transparent text-slate-300 hover:border-slate-800 hover:bg-[#090D16]'
-                            }`}
-                          >
-                            <div className="min-w-0">
-                              <span
-                                className={`block text-xs font-semibold ${
-                                  active ? 'text-emerald-300' : 'text-slate-100'
-                                }`}
-                              >
-                                {option.label}
-                              </span>
-                              <span className="mt-0.5 block text-[11px] leading-snug text-slate-400">
-                                {option.description}
-                              </span>
-                            </div>
-                            {active && (
-                              <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
+                {SORT_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
             </div>
           </div>
         </div>
@@ -477,40 +321,40 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
 
       {/* Match Cards Grid */}
       {isLoadingLive ? (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {[1, 2, 3, 4].map((n) => (
             <div
               key={n}
-              className="h-72 animate-pulse rounded-2xl border border-slate-800/80 bg-[#111827] p-5"
+              className="h-48 animate-pulse rounded-2xl border border-slate-800/80 bg-[#111827] p-4"
             />
           ))}
         </div>
       ) : filteredMatches.length === 0 ? (
-        <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center">
-          <p className="font-display text-lg font-semibold text-slate-200">
+        <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-7 text-center">
+          <p className="font-display text-base font-semibold text-slate-200 sm:text-lg">
             {matches.length === 0 && !isDemoMode
               ? 'Živé zápasy z API se nepodařilo načíst'
               : 'Pro vybrané filtry nebyly nalezeny žádné zápasy'}
           </p>
-          <p className="mt-1.5 text-sm text-slate-400">
+          <p className="mt-1 text-xs text-slate-400 sm:text-sm">
             {matches.length === 0 && !isDemoMode
               ? 'Demo režim je vypnutý. Zkontrolujte chybu výše, upravte API klíč v Nastavení nebo zkuste kurzy načíst znovu.'
               : 'Zkuste přepnout časové okno na Všechny dny nebo zrušit filtr pozitivního Value.'}
           </p>
-          <div className="mt-5 flex flex-wrap justify-center gap-3">
+          <div className="mt-4 flex flex-wrap justify-center gap-2.5">
             {matches.length === 0 && !isDemoMode ? (
               <>
                 <button
                   type="button"
                   onClick={onRefreshLive}
-                  className="min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
+                  className="min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
                 >
                   Zkusit načíst znovu
                 </button>
                 <button
                   type="button"
                   onClick={onOpenSettings}
-                  className="min-h-[44px] rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                  className="min-h-[42px] rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800"
                 >
                   Otevřít Nastavení
                 </button>
@@ -524,7 +368,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   setSportFilter('Vše');
                   setSearchQuery('');
                 }}
-                className="min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
+                className="min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
               >
                 Zobrazit všechny zápasy
               </button>
@@ -532,15 +376,15 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {filteredMatches.map((match) => {
-            const isPositiveValue = match.valueScore > 0;
+            const isPositiveValue = isMatchPositiveValue(match);
             const isSelected = selectedMatchIds.includes(match.id);
 
             return (
               <article
                 key={match.id}
-                className={`flex flex-col justify-between rounded-2xl border bg-[#111827] p-5 transition-colors ${
+                className={`flex flex-col justify-between rounded-2xl border bg-[#111827] p-4 transition-colors ${
                   isPositiveValue
                     ? 'border-emerald-500/40 hover:border-emerald-500/60'
                     : 'border-slate-800/90 hover:border-slate-700'
@@ -549,38 +393,34 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                 <div>
                   {/* Clean Unboxed Metadata Row */}
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2 text-slate-400">
+                    <div className="flex flex-wrap items-center gap-1.5 text-slate-400">
                       <span className="font-medium text-slate-300">{match.sport}</span>
                       <span aria-hidden="true">·</span>
                       <span>{match.league}</span>
                       <span aria-hidden="true">·</span>
                       <span className="font-mono tabular-nums">{match.kickoffTime}</span>
-                      {match.isCustom && typeof match.bookmakerMarginPct === 'number' && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono tabular-nums text-sky-300">
-                            Marže {formatPercent(match.bookmakerMarginPct)}
-                          </span>
-                        </>
-                      )}
                     </div>
 
-                    <div className="flex items-center gap-2.5">
-                      <div
+                    <div className="flex items-center gap-2">
+                      <span
                         className={`font-mono text-xs font-bold tabular-nums ${
                           isPositiveValue ? 'text-emerald-400' : 'text-slate-400'
                         }`}
                       >
-                        {isPositiveValue ? 'Value Bet ' : match.isCustom && match.valueScore === 0 ? 'Vlastní · Value ' : 'Bez výhody '}
+                        {isPositiveValue
+                          ? 'Value Bet '
+                          : match.isCustom && match.valueScore === 0
+                          ? 'Vlastní · Value '
+                          : 'Bez výhody '}
                         {formatPercent(match.valueScore, true)}
-                      </div>
+                      </span>
                       {match.isCustom && (
                         <button
                           type="button"
                           onClick={() => onDeleteCustomMatch(match.id)}
                           title="Smazat vlastní zápas"
                           aria-label={`Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -589,26 +429,24 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   </div>
 
                   {/* Teams & Recommended Pick */}
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <h2 className="font-display text-lg font-bold tracking-tight text-slate-50">
-                        {match.homeTeam} <span className="font-normal text-slate-500">vs.</span>{' '}
-                        {match.awayTeam}
-                      </h2>
-                      <p className="mt-1 text-sm text-slate-300">
-                        <span className="text-slate-400">{match.marketLabel}:</span>{' '}
-                        <span className="font-semibold text-emerald-300">{match.recommendedPick}</span>
-                      </p>
-                    </div>
+                  <div className="mt-2">
+                    <h2 className="font-display text-base font-bold tracking-tight text-slate-50 sm:text-lg">
+                      {match.homeTeam} <span className="font-normal text-slate-500">vs.</span>{' '}
+                      {match.awayTeam}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-slate-300 sm:text-sm">
+                      <span className="text-slate-400">{match.marketLabel}:</span>{' '}
+                      <span className="font-semibold text-emerald-300">{match.recommendedPick}</span>
+                    </p>
                   </div>
 
-                  {/* Odds Comparison Table */}
-                  <div className="mt-4 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2.5">
-                    <div className="px-3 text-center">
-                      <span className="block text-[11px] text-slate-400">Betano</span>
+                  {/* Factual Odds & Probability Strip (No simulated form or H2H) */}
+                  <div className="mt-3 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2">
+                    <div className="px-2.5 text-center">
+                      <span className="block text-[11px] text-slate-400">Kurz Betano</span>
                       <span
-                        className={`mt-0.5 block font-mono text-base font-bold tabular-nums ${
-                          match.odds.betano >= match.odds.tipsport && match.odds.betano > match.odds.marketAvg
+                        className={`mt-0.5 block font-mono text-sm font-bold tabular-nums sm:text-base ${
+                          match.odds.betano > match.odds.marketAvg
                             ? 'text-emerald-400'
                             : 'text-slate-100'
                         }`}
@@ -616,68 +454,27 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                         {formatOdds(match.odds.betano)}
                       </span>
                     </div>
-                    <div className="px-3 text-center">
-                      <span className="block text-[11px] text-slate-400">Tipsport</span>
-                      <span className="mt-0.5 block font-mono text-base font-semibold tabular-nums text-slate-200">
-                        {formatOdds(match.odds.tipsport)}
-                      </span>
-                    </div>
-                    <div className="px-3 text-center">
+                    <div className="px-2.5 text-center">
                       <span className="block text-[11px] text-slate-400">Průměr trhu</span>
-                      <span className="mt-0.5 block font-mono text-base font-medium tabular-nums text-slate-400">
+                      <span className="mt-0.5 block font-mono text-sm font-semibold tabular-nums text-slate-300 sm:text-base">
                         {formatOdds(match.odds.marketAvg)}
                       </span>
                     </div>
-                  </div>
-
-                  {/* AI Probability vs Implied Odds Bar */}
-                  <div className="mt-4 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">
-                        AI pravděpodobnost:{' '}
-                        <strong className="font-mono tabular-nums text-slate-100">
-                          {formatPercent(match.aiProbability)}
-                        </strong>
-                      </span>
-                      <span className="text-slate-400">
-                        Implikováno kurzem:{' '}
-                        <span className="font-mono tabular-nums text-slate-300">
-                          {formatPercent(match.impliedProbability)}
-                        </span>
+                    <div className="px-2.5 text-center">
+                      <span className="block text-[11px] text-slate-400">Šance na výhru</span>
+                      <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100 sm:text-base">
+                        {formatPercent(match.aiProbability)}
                       </span>
                     </div>
-                    <div className="relative h-2 w-full overflow-hidden rounded-full bg-slate-800">
-                      <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          isPositiveValue ? 'bg-emerald-500' : 'bg-slate-500'
-                        }`}
-                        style={{ width: `${Math.min(100, match.aiProbability)}%` }}
-                      />
-                    </div>
                   </div>
-
-                  {/* Form (Last 5) & H2H Summary */}
-                  <div className="mt-4 grid grid-cols-1 gap-2 border-t border-slate-800/70 pt-3 sm:grid-cols-2 sm:gap-4">
-                    <div className="space-y-1.5">
-                      <FormSequence label={match.homeTeam} form={match.formHome} />
-                      <FormSequence label={match.awayTeam} form={match.formAway} />
-                    </div>
-                    <div className="flex flex-col justify-center text-xs sm:border-l sm:border-slate-800/70 sm:pl-4">
-                      <span className="text-slate-400">Vzájemná bilance (H2H)</span>
-                      <span className="mt-0.5 font-medium text-slate-200">{match.h2hSummary}</span>
-                    </div>
-                  </div>
-
-                  {/* Czech Analytical Reasoning */}
-                  <p className="mt-3 text-xs leading-relaxed text-slate-300">{match.reasoning}</p>
                 </div>
 
-                {/* Actions Row */}
-                <div className="mt-4 flex flex-col gap-2.5 border-t border-slate-800/70 pt-4 sm:flex-row sm:items-center">
+                {/* Single-Row Side-by-Side Actions */}
+                <div className="mt-3 flex flex-row items-center gap-2 border-t border-slate-800/70 pt-3">
                   <button
                     type="button"
                     onClick={() => onToggleMatchOnSlip(match)}
-                    className={`inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap ${
+                    className={`inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:text-sm ${
                       isSelected
                         ? 'border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
                         : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
@@ -689,10 +486,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                         <span>Na tiketu</span>
                       </>
                     ) : (
-                      <>
-                        <Plus className="h-4 w-4 shrink-0" />
-                        <span>Přidat na tiket</span>
-                      </>
+                      <span>+ Přidat na tiket</span>
                     )}
                   </button>
 
@@ -701,10 +495,10 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={() => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick)}
-                    className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
+                    className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:text-sm"
                   >
-                    <span>Najít na Betanu</span>
-                    <ExternalLink className="h-4 w-4 shrink-0 text-slate-400" />
+                    <span>Betano</span>
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                   </a>
                 </div>
               </article>

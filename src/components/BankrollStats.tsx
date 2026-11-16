@@ -1,22 +1,40 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
+  BellOff,
+  BellRing,
   CheckCircle2,
+  Clock,
   ExternalLink,
   RotateCcw,
   Trash2,
   XCircle,
 } from 'lucide-react';
-import { Ticket, TicketStatus } from '../types/betting';
+import {
+  MatchAnalysis,
+  NotificationLeadMinutes,
+  Ticket,
+  TicketStatus,
+} from '../types/betting';
 import {
   BETANO_HOME_URL,
   formatCZK,
   formatOdds,
   formatPercent,
 } from '../utils/analyticsEngine';
+import {
+  formatTicketCountdownStatus,
+  getBrowserNotificationPermission,
+} from '../services/ticketNotificationService';
 
 interface BankrollStatsProps {
   tickets: Ticket[];
   initialBankroll: number;
+  activeMatches: MatchAnalysis[];
+  notificationsEnabled: boolean;
+  notificationLeadMinutes: NotificationLeadMinutes;
+  onUpdateNotifications: (enabled: boolean, leadMinutes: NotificationLeadMinutes) => Promise<void> | void;
+  highlightedWinTicketId: string | null;
   onSettleTicket: (ticketId: string, status: 'won' | 'lost') => void;
   onDeleteTicket: (ticketId: string) => void;
   onResetDemoHistory: () => void;
@@ -38,6 +56,11 @@ interface EquityPoint {
 export const BankrollStats: React.FC<BankrollStatsProps> = ({
   tickets,
   initialBankroll,
+  activeMatches,
+  notificationsEnabled,
+  notificationLeadMinutes,
+  onUpdateNotifications,
+  highlightedWinTicketId,
   onSettleTicket,
   onDeleteTicket,
   onResetDemoHistory,
@@ -46,6 +69,38 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
 }) => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [isNotifPopoverOpen, setIsNotifPopoverOpen] = useState(false);
+  const notifPopoverRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isNotifPopoverOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (notifPopoverRef.current && !notifPopoverRef.current.contains(e.target as Node)) {
+        setIsNotifPopoverOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsNotifPopoverOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [isNotifPopoverOpen]);
+
+  const permissionState = getBrowserNotificationPermission();
+  const isNotificationsActive = notificationsEnabled && permissionState === 'granted';
 
   const metrics = useMemo(() => {
     const settled = tickets.filter((t) => t.status === 'won' || t.status === 'lost');
@@ -171,6 +226,105 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {/* Notification Bell Icon & Compact Settings Popover */}
+          <div className="relative" ref={notifPopoverRef}>
+            <button
+              type="button"
+              onClick={() => setIsNotifPopoverOpen((prev) => !prev)}
+              aria-expanded={isNotifPopoverOpen}
+              aria-label="Oznámení (začátek zápasu a výhry)"
+              title="Oznámení (začátek zápasu a výhry)"
+              className={`inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
+                permissionState === 'denied' || permissionState === 'unsupported'
+                  ? 'border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
+                  : isNotificationsActive
+                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                  : 'border-slate-800 bg-[#111827] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+              }`}
+            >
+              {permissionState === 'denied' || permissionState === 'unsupported' ? (
+                <BellOff className="h-4 w-4" />
+              ) : isNotificationsActive ? (
+                <BellRing className="h-4 w-4" />
+              ) : (
+                <Bell className="h-4 w-4" />
+              )}
+            </button>
+
+            {isNotifPopoverOpen && (
+              <div
+                role="dialog"
+                aria-label="Nastavení oznámení"
+                className="absolute left-0 top-12 z-40 w-72 rounded-2xl border border-slate-700/90 bg-[#0F1623] p-4 shadow-2xl sm:left-auto sm:right-0"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-semibold text-slate-100">
+                    Oznámení (začátek zápasu a výhry)
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isNotificationsActive}
+                    onClick={() =>
+                      void onUpdateNotifications(!isNotificationsActive, notificationLeadMinutes)
+                    }
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${
+                      isNotificationsActive
+                        ? 'border-emerald-500 bg-emerald-500'
+                        : 'border-slate-700 bg-slate-800'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        isNotificationsActive ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="mt-3 border-t border-slate-800 pt-3">
+                  <span className="block text-[11px] font-medium text-slate-400">
+                    Čas upozornění před začátkem:
+                  </span>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        { value: 15, label: '15 min předem' },
+                        { value: 0, label: 'Při začátku' },
+                      ] as const
+                    ).map((opt) => {
+                      const active = notificationLeadMinutes === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() =>
+                            void onUpdateNotifications(notificationsEnabled, opt.value)
+                          }
+                          className={`min-h-[34px] rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${
+                            active
+                              ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 font-semibold'
+                              : 'border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <p className="mt-2.5 text-[11px] leading-snug text-slate-400">
+                  {permissionState === 'denied'
+                    ? 'Prohlížeč oznámení zablokoval. Povolte je v nastavení webu.'
+                    : permissionState === 'unsupported'
+                    ? 'Prohlížeč nepodporuje Web Notifications API.'
+                    : 'Posíláme pouze upozornění na start aktivních tiketů a výhry (při prohře ticho).'}
+                </p>
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={onStartFromScratch}
@@ -425,16 +579,21 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                 hour: '2-digit',
                 minute: '2-digit',
               });
+              const countdown = formatTicketCountdownStatus(ticket, nowMs, activeMatches);
+              const isWinHighlighted =
+                ticket.id === highlightedWinTicketId && ticket.status === 'won';
 
               return (
                 <article
                   key={ticket.id}
-                  className={`rounded-2xl border bg-[#111827] p-5 ${
-                    ticket.status === 'won'
-                      ? 'border-emerald-500/35'
+                  className={`rounded-2xl border p-5 transition-all duration-500 ${
+                    isWinHighlighted
+                      ? 'border-emerald-400 bg-emerald-950/25 ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-500/15'
+                      : ticket.status === 'won'
+                      ? 'border-emerald-500/35 bg-[#111827]'
                       : ticket.status === 'lost'
-                      ? 'border-rose-500/30'
-                      : 'border-slate-800/90'
+                      ? 'border-rose-500/30 bg-[#111827]'
+                      : 'border-slate-800/90 bg-[#111827]'
                   }`}
                 >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -449,6 +608,35 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                       <h3 className="mt-1 font-display text-base font-bold text-slate-100">
                         {ticket.label}
                       </h3>
+                      {countdown && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs font-semibold tabular-nums ${
+                              countdown.state === 'live'
+                                ? 'border-emerald-500/45 bg-emerald-500/15 text-emerald-300'
+                                : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                            }`}
+                          >
+                            {countdown.state === 'live' ? (
+                              <span
+                                className="h-2 w-2 animate-pulse rounded-full bg-emerald-400"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Clock className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                            )}
+                            <span>{countdown.label}</span>
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            Nejbližší: {countdown.matchTitle}
+                          </span>
+                        </div>
+                      )}
+                      {isWinHighlighted && (
+                        <p className="mt-1.5 text-xs font-bold text-emerald-300">
+                          🏆 Výherní tiket! Vyhrál jsi +{formatCZK(ticket.potentialWin)}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0">

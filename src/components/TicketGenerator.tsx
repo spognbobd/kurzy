@@ -3,9 +3,12 @@ import {
   AlertTriangle,
   BookmarkCheck,
   Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   ExternalLink,
   Flame,
-  Layers,
   PlusCircle,
   RefreshCw,
   ShieldCheck,
@@ -28,6 +31,8 @@ import {
   formatOdds,
   formatPercent,
   generateOptimalTicket,
+  parseAmountInput,
+  sanitizeIntegerInput,
 } from '../utils/analyticsEngine';
 import {
   fetchSingleMatchReasoning,
@@ -55,65 +60,53 @@ const ALL_SPORTS: SportCategory[] = [
   'Šipky',
   'Ostatní',
 ];
-const BUDGET_PRESETS = [5, 50, 200, 1000, 5000];
+
+const LEG_COUNT_OPTIONS: Array<{ value: number | null; label: string }> = [
+  { value: null, label: 'Auto' },
+  { value: 1, label: '1' },
+  { value: 2, label: '2' },
+  { value: 3, label: '3' },
+  { value: 4, label: '4' },
+];
 
 const TICKET_MODES: {
   id: TicketStyle;
+  shortTitle: string;
   title: string;
-  legsLabel: string;
-  stakeHint: string;
-  description: string;
+  summary: string;
   riskLabel: RiskLevel;
   icon: typeof ShieldCheck;
 }[] = [
   {
     id: 'safe',
+    shortTitle: 'Jistota',
     title: 'Jistota (Konzervativní)',
-    legsLabel: '1–2 zápasy',
-    stakeHint: 'Vklad cca 10 % (min. 10 Kč)',
-    description:
-      'Vybere 1 až 2 zápasy s nejvyšší pravděpodobností výhry a nejnižším rizikem prohry.',
+    summary: '1–2 nejbezpečnější zápasy · doporučený vklad cca 10 % (min. 10 Kč)',
     riskLabel: 'Konzervativní',
     icon: ShieldCheck,
   },
   {
     id: 'smart_value',
+    shortTitle: 'Vyvážený',
     title: 'Vyvážený (Smart Value)',
-    legsLabel: '2–3 zápasy',
-    stakeHint: 'Vklad cca 7 % (min. 10 Kč)',
-    description:
-      'Kombinuje dobrou pravděpodobnost nad zvolený limit s kladnou hodnotou kurzu (+EV).',
+    summary: '2–3 zápasy s dobrou šancí a +EV · vklad cca 7 % (min. 10 Kč)',
     riskLabel: 'Vyvážený',
     icon: TrendingUp,
   },
   {
     id: 'bold',
+    shortTitle: 'Odvážný',
     title: 'Odvážný (Vyšší kurz)',
-    legsLabel: '3–4 zápasy',
-    stakeHint: 'Vklad cca 5 % (min. 5 Kč)',
-    description:
-      'Vybere 3 až 4 zápasy s nejvyšším celkovým kurzem a nejvyšší odchylkou Value %.',
+    summary: '3–4 zápasy s nejvyšším kurzem a Value % · vklad cca 5 % (min. 5 Kč)',
     riskLabel: 'Odvážný',
     icon: Flame,
   },
 ];
 
-const RISK_BADGE_STYLES: Record<EstimatedRiskBadge, { container: string; text: string; dot: string }> = {
-  Nízké: {
-    container: 'border-emerald-500/40 bg-emerald-500/10',
-    text: 'text-emerald-300',
-    dot: 'bg-emerald-400',
-  },
-  Střední: {
-    container: 'border-amber-500/40 bg-amber-500/10',
-    text: 'text-amber-300',
-    dot: 'bg-amber-400',
-  },
-  Vyšší: {
-    container: 'border-rose-500/40 bg-rose-500/10',
-    text: 'text-rose-300',
-    dot: 'bg-rose-400',
-  },
+const RISK_TEXT_STYLES: Record<EstimatedRiskBadge, string> = {
+  Nízké: 'font-semibold text-emerald-300',
+  Střední: 'font-semibold text-amber-300',
+  Vyšší: 'font-semibold text-rose-300',
 };
 
 function renderFormattedGeminiReasoning(text: string) {
@@ -180,18 +173,24 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     [matches]
   );
 
-  const [budget, setBudget] = useState<number>(Math.max(5, Math.round(currentBankroll)));
+  const [budgetInput, setBudgetInput] = useState<string>(() =>
+    String(Math.max(5, Math.round(currentBankroll)))
+  );
   const [ticketStyle, setTicketStyle] = useState<TicketStyle>('safe');
+  const [exactLegsCount, setExactLegsCount] = useState<number | null>(null);
   const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(ALL_SPORTS);
+  const [showOtherSports, setShowOtherSports] = useState(false);
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   const [variationIndex, setVariationIndex] = useState(0);
-  const [customStake, setCustomStake] = useState<number>(5);
+  const [customStakeInput, setCustomStakeInput] = useState<string>('5');
   const [savedFeedback, setSavedFeedback] = useState(false);
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
   const [aiModels, setAiModels] = useState<Record<string, string>>({});
   const [statFallbackReasons, setStatFallbackReasons] = useState<
     Record<string, { text: string; apiStatus?: string }>
   >({});
+  const [expandedMatchIds, setExpandedMatchIds] = useState<Record<string, boolean>>({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -200,30 +199,67 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(false);
   }, [matchesSignature, recommendedMinProb]);
 
-  const safeBudget = Math.max(5, Math.round(budget || 5));
-
-  const generated = useMemo(
-    () =>
-      generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
-        minMatchProbability,
-      }),
-    [matches, selectedSports, ticketStyle, safeBudget, variationIndex, minMatchProbability]
-  );
-
-  useEffect(() => {
-    if (generated) {
-      setCustomStake(generated.recommendedStake);
-    }
-  }, [generated]);
-
   const trimmedGeminiKey = geminiApiKey.trim();
 
   useEffect(() => {
     setStatFallbackReasons({});
   }, [trimmedGeminiKey]);
 
-  const handleFetchSingleAnalysis = async (leg: Ticket['legs'][number]) => {
+  const safeBudget = parseAmountInput(budgetInput, currentBankroll, 5);
+
+  const generated = useMemo(
+    () =>
+      generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
+        minMatchProbability,
+        exactLegsCount,
+      }),
+    [
+      matches,
+      selectedSports,
+      ticketStyle,
+      safeBudget,
+      variationIndex,
+      minMatchProbability,
+      exactLegsCount,
+    ]
+  );
+
+  useEffect(() => {
+    if (generated) {
+      setCustomStakeInput(String(generated.recommendedStake));
+    }
+  }, [generated]);
+
+  const { primarySports, otherSports, sportCounts } = useMemo(() => {
+    const counts = new Map<SportCategory, { totalNonNeg: number; eligible: number }>();
+    for (const s of ALL_SPORTS) {
+      counts.set(s, { totalNonNeg: 0, eligible: 0 });
+    }
+    for (const m of matches) {
+      if (m.valueScore < 0) continue;
+      const entry = counts.get(m.sport);
+      if (!entry) continue;
+      entry.totalNonNeg += 1;
+      if (m.aiProbability >= minMatchProbability) {
+        entry.eligible += 1;
+      }
+    }
+
+    const withMatches = ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0);
+    const primary = withMatches.length > 0 ? withMatches : ALL_SPORTS;
+    const secondary = withMatches.length > 0 ? ALL_SPORTS.filter((s) => !withMatches.includes(s)) : [];
+
+    return { primarySports: primary, otherSports: secondary, sportCounts: counts };
+  }, [matches, minMatchProbability]);
+
+  const handleOpenOrFetchAnalysis = async (leg: Ticket['legs'][number]) => {
     if (loadingMatchIds[leg.matchId]) return;
+
+    const cachedText = aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text;
+    if (cachedText) {
+      setExpandedMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
+      return;
+    }
 
     setLoadingMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
 
@@ -244,6 +280,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           [leg.matchId]: { text: result.text, apiStatus: result.apiStatus },
         }));
       }
+      setExpandedMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
     } finally {
       setLoadingMatchIds((prev) => {
         const next = { ...prev };
@@ -251,6 +288,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
         return next;
       });
     }
+  };
+
+  const handleCollapseAnalysis = (matchId: string) => {
+    setExpandedMatchIds((prev) => ({ ...prev, [matchId]: false }));
   };
 
   const eligibleMatchesCount = useMemo(
@@ -287,27 +328,30 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(false);
   };
 
-  const handleGenerateClick = () => {
-    const normalizedBudget = Math.max(5, Math.round(budget || 5));
-    setBudget(normalizedBudget);
+  const handleSelectLegsCount = (count: number | null) => {
+    setExactLegsCount(count);
     setVariationIndex(0);
     setSavedFeedback(false);
-    const fresh = generateOptimalTicket(matches, selectedSports, ticketStyle, normalizedBudget, 0, {
-      minMatchProbability,
-    });
-    if (fresh) {
-      setCustomStake(fresh.recommendedStake);
-    }
+  };
+
+  const handlePrevVariation = () => {
+    if (!generated || generated.availableCombosCount <= 1) return;
+    const count = generated.availableCombosCount;
+    setVariationIndex((prev) => (prev - 1 + count) % count);
+    setSavedFeedback(false);
   };
 
   const handleNextVariation = () => {
-    setVariationIndex((prev) => prev + 1);
+    if (!generated || generated.availableCombosCount <= 1) return;
+    const count = generated.availableCombosCount;
+    setVariationIndex((prev) => (prev + 1) % count);
     setSavedFeedback(false);
   };
 
   const handleSave = () => {
     if (!generated) return;
-    const stake = Math.max(5, Math.round(customStake || generated.recommendedStake));
+    const stake = parseAmountInput(customStakeInput, generated.recommendedStake, 5);
+    setCustomStakeInput(String(stake));
     const activeMode = TICKET_MODES.find((m) => m.id === generated.style) ?? TICKET_MODES[0];
     const ticket: Ticket = {
       id: `tkt-${Date.now()}`,
@@ -335,97 +379,165 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   };
 
   const activeMode = TICKET_MODES.find((m) => m.id === ticketStyle) ?? TICKET_MODES[0];
-  const activeStake = Math.max(5, Math.round(customStake || (generated?.recommendedStake ?? 5)));
+  const parsedCustomStake = Number(customStakeInput);
+  const activeStake =
+    customStakeInput === '' || !Number.isFinite(parsedCustomStake)
+      ? 0
+      : Math.round(parsedCustomStake);
   const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
-  const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
-  const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
+  const isLowProbCapped =
+    exactLegsCount === null && ticketStyle === 'smart_value' && minMatchProbability < 45;
+  const riskTextClass = generated ? RISK_TEXT_STYLES[generated.estimatedRisk] : '';
   const customMatches = useMemo(() => matches.filter((m) => m.isCustom), [matches]);
   const comboIndexLabel =
     generated && generated.availableCombosCount > 1
       ? ` (${(variationIndex % generated.availableCombosCount) + 1}/${generated.availableCombosCount})`
       : '';
 
+  const legsSummaryLabel =
+    exactLegsCount === null
+      ? 'Auto'
+      : exactLegsCount === 1
+      ? '1 zápas'
+      : `${exactLegsCount} zápasy`;
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <div className="space-y-4 sm:space-y-5">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs text-slate-400">
-            Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)
-          </p>
-          <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
-            Generátor optimálního tiketu
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
+            Generátor tiketu
           </h1>
+          <p className="mt-0.5 text-xs text-slate-400">
+            Živý automatický přepočet strategie, počtu zápasů a Value filtrů
+          </p>
         </div>
 
         <button
           type="button"
           onClick={onOpenCustomMatchModal}
-          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0 self-start sm:self-auto"
+          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 whitespace-nowrap shrink-0 self-start sm:self-auto"
         >
           <PlusCircle className="h-4 w-4 shrink-0" />
-          <span>+ Vlastní zápas (Ping-pong / ostatní)</span>
+          <span>Vlastní zápas</span>
         </button>
       </div>
 
-      {/* Unified 3-Card Mode Selector (3 karty vedle sebe) */}
-      <section aria-label="Výběr stylu tiketu" className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        {TICKET_MODES.map((mode) => {
-          const Icon = mode.icon;
-          const active = ticketStyle === mode.id;
-          return (
-            <button
-              key={mode.id}
-              type="button"
-              onClick={() => handleSelectStyle(mode.id)}
-              aria-pressed={active}
-              className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition-colors ${
-                active
-                  ? 'border-emerald-500/70 bg-emerald-500/12 shadow-lg shadow-emerald-950/20'
-                  : 'border-slate-800/90 bg-[#111827] hover:border-slate-700'
-              }`}
+      <div
+        className={
+          filtersCollapsed
+            ? 'grid grid-cols-1 gap-4'
+            : 'grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start lg:gap-5'
+        }
+      >
+        {/* Collapsible Unified Strategy + Filters Card */}
+        <section
+          aria-label="Nastavení tiketu a filtrů"
+          className={`rounded-2xl border border-slate-800/90 bg-[#111827] ${
+            filtersCollapsed ? 'px-4 py-2.5' : 'space-y-4 p-4 sm:p-5 lg:col-span-5'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setFiltersCollapsed((prev) => !prev)}
+            aria-expanded={!filtersCollapsed}
+            className="flex min-h-[40px] w-full items-center justify-between gap-3 text-left"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <SlidersHorizontal className="h-4 w-4 shrink-0 text-emerald-400" />
+              <span className="truncate font-mono text-xs font-semibold tabular-nums text-slate-200">
+                Filtry: {activeMode.shortTitle} · {legsSummaryLabel} · Min. {minMatchProbability} %
+              </span>
+            </div>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-800 bg-[#090D16] px-2.5 py-1 text-[11px] font-medium text-slate-300">
+              <span>{filtersCollapsed ? 'Rozbalit' : 'Sbalit'}</span>
+              {filtersCollapsed ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronUp className="h-3.5 w-3.5" />
+              )}
+            </span>
+          </button>
+
+          {!filtersCollapsed && (
+            <div className="space-y-4 border-t border-slate-800/80 pt-3.5">
+          {/* 1. Compact Horizontal Strategy Switcher */}
+          <div>
+            <span className="block text-xs font-semibold text-slate-300">Strategie tiketu</span>
+            <div
+              role="group"
+              aria-label="Výběr strategie tiketu"
+              className="mt-1.5 grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1"
             >
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`inline-flex items-center gap-2 font-display text-sm font-bold ${
-                      active ? 'text-emerald-300' : 'text-slate-100'
+              {TICKET_MODES.map((mode) => {
+                const Icon = mode.icon;
+                const active = ticketStyle === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => handleSelectStyle(mode.id)}
+                    aria-pressed={active}
+                    className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                        : 'text-slate-300 hover:bg-slate-800/60 hover:text-slate-100'
                     }`}
                   >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span>{mode.title}</span>
-                  </span>
-                  <span className="font-mono text-[11px] font-semibold tabular-nums text-slate-300">
-                    {mode.legsLabel}
-                  </span>
-                </div>
-                <p className="mt-2 text-xs leading-relaxed text-slate-400">{mode.description}</p>
-              </div>
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span>{mode.shortTitle}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-snug text-slate-400">{activeMode.summary}</p>
+          </div>
 
-              <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px]">
-                <span className="font-mono font-medium tabular-nums text-slate-300">
-                  {mode.stakeHint}
-                </span>
-                {active && <span className="font-semibold text-emerald-400">Aktivní režim</span>}
-              </div>
-            </button>
-          );
-        })}
-      </section>
+          {/* 2. Exact Leg Count Selector */}
+          <div className="border-t border-slate-800/80 pt-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-300">Počet zápasů na tiket</span>
+              <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                {exactLegsCount === null ? 'Dle strategie' : `Přesně ${exactLegsCount}`}
+              </span>
+            </div>
+            <div
+              role="group"
+              aria-label="Počet zápasů na tiket"
+              className="mt-1.5 grid grid-cols-5 gap-1.5"
+            >
+              {LEG_COUNT_OPTIONS.map((opt) => {
+                const active = exactLegsCount === opt.value;
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => handleSelectLegsCount(opt.value)}
+                    aria-pressed={active}
+                    className={`inline-flex min-h-[44px] items-center justify-center rounded-xl border font-mono text-xs font-semibold tabular-nums transition-colors whitespace-nowrap ${
+                      active
+                        ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
+                        : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
-        {/* Left Configurator Panel */}
-        <section className="space-y-5 rounded-2xl border border-slate-800/90 bg-[#111827] p-5 lg:col-span-5">
-          {/* Minimum Match Probability Slider */}
-          <div>
+          {/* 3A. Minimum Match Probability Slider */}
+          <div className="border-t border-slate-800/80 pt-3.5">
             <div className="flex items-center justify-between gap-2">
               <label
                 htmlFor="min-prob-slider"
-                className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300"
               >
-                <SlidersHorizontal className="h-4 w-4 text-emerald-400" />
-                <span>Minimální pravděpodobnost zápasu</span>
+                <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Minimální pravděpodobnost (%)</span>
               </label>
-              <span className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-sm font-bold tabular-nums text-emerald-300">
+              <span className="font-mono text-sm font-bold tabular-nums text-emerald-300">
                 {minMatchProbability} %
               </span>
             </div>
@@ -442,12 +554,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 setVariationIndex(0);
                 setSavedFeedback(false);
               }}
-              className="mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
+              className="mt-2.5 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
             />
 
             <div className="mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500">
               <span>25 %</span>
-              <span className={minMatchProbability < 45 ? 'text-amber-400' : ''}>45 %</span>
               <button
                 type="button"
                 onClick={() => {
@@ -457,130 +568,134 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                 }}
                 className={`transition-colors hover:text-emerald-300 ${
                   minMatchProbability === recommendedMinProb
-                    ? 'text-emerald-400 font-semibold'
+                    ? 'font-semibold text-emerald-400'
                     : 'text-slate-400'
                 }`}
               >
-                Auto: {recommendedMinProb} % (min. 3 zápasy)
+                Auto {recommendedMinProb} %
               </button>
+              <span
+                className={`font-semibold ${
+                  eligibleMatchesCount > 0 ? 'text-slate-300' : 'text-rose-400'
+                }`}
+              >
+                {eligibleMatchesCount}/{nonNegativeSportMatchesCount} zápasů
+              </span>
               <span>85 %</span>
             </div>
 
-            <div className="mt-2.5 flex items-center justify-between text-xs text-slate-400">
-              <span>Zápasy splňující limit (Value ≥ 0,0 %):</span>
-              <span
-                className={`font-mono font-semibold tabular-nums ${
-                  eligibleMatchesCount > 0 ? 'text-emerald-300' : 'text-rose-400'
-                }`}
-              >
-                {eligibleMatchesCount} z {nonNegativeSportMatchesCount}
-              </span>
-            </div>
-
             {isLowProbCapped && (
-              <div className="mt-2.5 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-200">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
                 <span>
-                  Limit je pod 45 %: režim Vyvážený automaticky omezuje počet zápasů na max. 1–2 (sólo/double).
+                  Limit pod 45 %: režim Vyvážený v režimu Auto omezuje tiket na max. 1–2 zápasy.
                 </span>
               </div>
             )}
           </div>
 
-          {/* Budget Input */}
-          <div className="border-t border-slate-800/80 pt-5">
-            <div className="flex items-center justify-between">
-              <label htmlFor="generator-budget" className="text-sm font-semibold text-slate-100">
-                Váš rozpočet (Kč)
+          {/* 3B. Compact Single-Row Budget + Bankroll Button */}
+          <div className="border-t border-slate-800/80 pt-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="generator-budget" className="text-xs font-semibold text-slate-300">
+                Rozpočet (Kč)
               </label>
+              <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                Bankroll: {formatCZK(currentBankroll)}
+              </span>
+            </div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <input
+                id="generator-budget"
+                type="text"
+                inputMode="numeric"
+                placeholder="0"
+                value={budgetInput}
+                onChange={(e) => {
+                  setBudgetInput(sanitizeIntegerInput(e.target.value));
+                  setSavedFeedback(false);
+                }}
+                className="min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
+              />
               <button
                 type="button"
                 onClick={() => {
-                  setBudget(Math.max(5, Math.round(currentBankroll)));
+                  setBudgetInput(String(Math.max(5, Math.round(currentBankroll))));
                   setSavedFeedback(false);
                 }}
-                className="text-xs font-medium text-emerald-400 hover:text-emerald-300"
+                className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-500/50 hover:bg-slate-800/70 whitespace-nowrap"
               >
-                Použít bankroll ({formatCZK(currentBankroll)})
+                Použít bankroll
               </button>
-            </div>
-            <input
-              id="generator-budget"
-              type="number"
-              min={5}
-              step={5}
-              value={budget}
-              onChange={(e) => {
-                setBudget(Number(e.target.value));
-                setSavedFeedback(false);
-              }}
-              onBlur={() => setBudget((b) => Math.max(5, Math.round(b || 5)))}
-              className="mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
-            />
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {BUDGET_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => {
-                    setBudget(preset);
-                    setSavedFeedback(false);
-                  }}
-                  className={`min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-xs tabular-nums transition-colors ${
-                    budget === preset
-                      ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
-                      : 'border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {formatCZK(preset)}
-                </button>
-              ))}
             </div>
           </div>
 
-          {/* Sport Multi-select */}
-          <div className="border-t border-slate-800/80 pt-5">
-            <span className="block text-sm font-semibold text-slate-100">Zahrnuté sporty</span>
-            <div className="mt-2.5 grid grid-cols-2 gap-2">
-              {ALL_SPORTS.map((sport) => {
+          {/* 3C. Available Sports Filter (+ collapsible Other Sports) */}
+          <div className="border-t border-slate-800/80 pt-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-300">Zahrnuté sporty</span>
+              {otherSports.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowOtherSports((v) => !v)}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200"
+                >
+                  <span>Další sporty ({otherSports.length})</span>
+                  {showOtherSports ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+            </div>
+
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {primarySports.map((sport) => {
                 const active = selectedSports.includes(sport);
-                const count = matches.filter(
-                  (m) =>
-                    m.sport === sport &&
-                    m.aiProbability >= minMatchProbability &&
-                    m.valueScore >= 0
-                ).length;
+                const count = sportCounts.get(sport)?.eligible ?? 0;
                 return (
                   <button
                     key={sport}
                     type="button"
                     onClick={() => toggleSport(sport)}
-                    className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3.5 py-2 text-sm font-medium transition-colors ${
+                    className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
                       active
                         ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
                         : 'border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    <span>{sport}</span>
-                    <span className="font-mono text-xs tabular-nums opacity-75">{count}</span>
+                    <span className="truncate">{sport}</span>
+                    <span className="font-mono text-[11px] tabular-nums opacity-80">{count}</span>
                   </button>
                 );
               })}
+
+              {showOtherSports &&
+                otherSports.map((sport) => {
+                  const active = selectedSports.includes(sport);
+                  const count = sportCounts.get(sport)?.eligible ?? 0;
+                  return (
+                    <button
+                      key={sport}
+                      type="button"
+                      onClick={() => toggleSport(sport)}
+                      className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
+                        active
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                          : 'border-slate-800/80 bg-[#090D16] text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      <span className="truncate">{sport}</span>
+                      <span className="font-mono text-[11px] tabular-nums opacity-70">{count}</span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
 
-          {/* Primary Generate Button */}
-          <button
-            type="button"
-            onClick={handleGenerateClick}
-            className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400"
-          >
-            <Layers className="h-4 w-4 shrink-0" />
-            <span>Vygenerovat tiket</span>
-          </button>
-
           {customMatches.length > 0 && (
-            <div className="border-t border-slate-800/80 pt-4 space-y-2">
+            <div className="space-y-2 border-t border-slate-800/80 pt-3.5">
               <span className="block text-xs font-semibold text-slate-300">
                 Uložené vlastní zápasy ({customMatches.length})
               </span>
@@ -602,7 +717,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                       type="button"
                       onClick={() => onDeleteCustomMatch(cm.id)}
                       aria-label={`Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -611,12 +726,14 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               </div>
             </div>
           )}
+            </div>
+          )}
         </section>
 
         {/* Right Generated Ticket Result */}
-        <section className="space-y-4 lg:col-span-7">
+        <section className={filtersCollapsed ? 'space-y-4' : 'space-y-4 lg:col-span-7'}>
           {!generated ? (
-            <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center">
+            <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-6 text-center sm:p-8">
               <p className="font-display text-lg font-semibold text-slate-200">
                 {nonNegativeSportMatchesCount === 0
                   ? 'Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)'
@@ -624,7 +741,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               </p>
               <p className="mt-1.5 text-sm text-slate-400">
                 {nonNegativeSportMatchesCount === 0
-                  ? 'Zápasy se záporným Value (pod 0,0 %) generátor nikdy nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas.'
+                  ? 'Zápasy se záporným Value (pod 0,0 %) generátor nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas.'
                   : 'Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu.'}
               </p>
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
@@ -634,9 +751,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                     setMinMatchProbability(recommendedMinProb);
                     setVariationIndex(0);
                   }}
-                  className="inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                 >
-                  Nastavit doporučený limit ({recommendedMinProb} %)
+                  Doporučený limit ({recommendedMinProb} %)
                 </button>
                 <button
                   type="button"
@@ -644,26 +761,29 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                     setSelectedSports(ALL_SPORTS);
                     setVariationIndex(0);
                   }}
-                  className="inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                 >
                   Vybrat všechny sporty
                 </button>
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border border-emerald-500/40 bg-[#111827] p-5 sm:p-6">
+            <div className="rounded-2xl border border-emerald-500/40 bg-[#111827] p-4 sm:p-5">
               {/* Ticket Header & Regenerate */}
-              <div className="flex flex-col gap-3 border-b border-slate-800/80 pb-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 border-b border-slate-800/80 pb-3.5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-400">
-                    <Sparkles className="h-3.5 w-3.5" />
-                    <span className="font-semibold">{activeMode.title}</span>
-                    <span className="text-slate-600" aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums text-slate-400">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span className="font-semibold text-emerald-400">{activeMode.shortTitle}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums">
                       Limit ≥ {generated.minMatchProbability} %
                     </span>
+                    <span aria-hidden="true">·</span>
+                    <span className={riskTextClass}>
+                      Riziko: {generated.estimatedRisk}
+                    </span>
                   </div>
-                  <h2 className="mt-1 font-display text-xl font-bold text-slate-50">
+                  <h2 className="mt-1 font-display text-lg font-bold text-slate-50 sm:text-xl">
                     Sestavený tiket ({generated.legs.length}{' '}
                     {generated.legs.length === 1
                       ? 'zápas'
@@ -674,15 +794,21 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   </h2>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2.5">
-                  {riskBadgeStyle && (
-                    <div
-                      className={`inline-flex min-h-[38px] items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold ${riskBadgeStyle.container} ${riskBadgeStyle.text}`}
-                    >
-                      <span className={`h-2 w-2 rounded-full ${riskBadgeStyle.dot}`} />
-                      <span>Riziko: {generated.estimatedRisk}</span>
-                    </div>
-                  )}
+                <div
+                  role="group"
+                  aria-label="Listování kombinacemi tiketu"
+                  className="inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto"
+                >
+                  <button
+                    type="button"
+                    onClick={handlePrevVariation}
+                    disabled={generated.availableCombosCount <= 1}
+                    aria-label="Předchozí kombinace"
+                    title="Předchozí kombinace"
+                    className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
 
                   <button
                     type="button"
@@ -691,92 +817,81 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                     title={
                       generated.availableCombosCount <= 1
                         ? 'Pro tento filtr není dostupná jiná kombinace'
-                        : 'Vybrat jinou kombinaci zápasů'
+                        : 'Další kombinace zápasů'
                     }
-                    className="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap shrink-0"
+                    className="inline-flex min-h-[40px] items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap"
                   >
                     <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
                     <span>Jiná kombinace{comboIndexLabel}</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={handleNextVariation}
+                    disabled={generated.availableCombosCount <= 1}
+                    aria-label="Další kombinace"
+                    title="Další kombinace"
+                    className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
 
-              {/* Key Ticket KPIs */}
-              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5">
-                  <span className="block text-[11px] text-slate-400">Celková šance na výhru</span>
-                  <span className="mt-1 block font-mono text-xl font-bold tabular-nums text-slate-50">
+              {/* Compact 2x2 Ticket Overview Grid */}
+              <div className="mt-3.5 grid grid-cols-2 gap-2.5">
+                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
+                  <span className="block text-[11px] text-slate-400">Šance na výhru</span>
+                  <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-50 sm:text-xl">
                     {formatPercent(generated.totalProbability)}
                   </span>
                 </div>
 
-                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5">
+                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
                   <span className="block text-[11px] text-slate-400">Celkový kurz</span>
-                  <span className="mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-400">
+                  <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-400 sm:text-xl">
                     {formatOdds(generated.totalOdds)}
                   </span>
                 </div>
 
-                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5">
-                  <span className="block text-[11px] text-slate-400">Úroveň rizika</span>
-                  <span
-                    className={`mt-1 block font-display text-lg font-bold ${
-                      riskBadgeStyle ? riskBadgeStyle.text : 'text-slate-100'
-                    }`}
-                  >
-                    {generated.estimatedRisk}
-                  </span>
-                </div>
-
-                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5">
+                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
                   <span className="block text-[11px] text-slate-400">Doporučený vklad</span>
-                  <span className="mt-1 block font-mono text-xl font-bold tabular-nums text-slate-100">
+                  <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-100 sm:text-xl">
                     {formatCZK(generated.recommendedStake)}
                   </span>
                 </div>
 
-                <div className="col-span-2 rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5 sm:col-span-1">
+                <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
                   <span className="block text-[11px] text-slate-400">Potenciální výhra</span>
-                  <span className="mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-300">
+                  <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-300 sm:text-xl">
                     {formatCZK(calculatedWin)}
                   </span>
                 </div>
               </div>
 
-              {/* Probability Product & Bankroll Safety Note */}
-              <div className="mt-3 space-y-2 rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5 text-xs text-slate-300">
-                <div className="flex items-start gap-2.5">
-                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
-                  <span>
-                    {generated.note} Doporučený vklad tvoří{' '}
-                    <strong className="font-mono tabular-nums text-slate-100">
-                      {((generated.recommendedStake / safeBudget) * 100).toFixed(1)} %
-                    </strong>{' '}
-                    rozpočtu.
-                  </span>
-                </div>
-                <div className="border-t border-slate-800/70 pt-2 font-mono text-[11px] tabular-nums text-slate-400">
-                  Výpočet šance tiketu (součin):{' '}
-                  {generated.legs.map((l) => formatPercent(l.aiProbability)).join(' × ')} ={' '}
-                  <span className="font-semibold text-slate-200">
-                    {formatPercent(generated.totalProbability)}
-                  </span>
-                </div>
-              </div>
+              {/* Compact Probability & Note Summary */}
+              <p className="mt-2.5 text-xs leading-relaxed text-slate-400">
+                {generated.note} Vklad{' '}
+                <span className="font-mono font-semibold tabular-nums text-slate-200">
+                  {((generated.recommendedStake / safeBudget) * 100).toFixed(1)} %
+                </span>{' '}
+                rozpočtu.
+              </p>
 
               {/* Legs List */}
-              <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
+              <div className="mt-4 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
                   const geminiReason = aiReasons[leg.matchId];
                   const statFallback = statFallbackReasons[leg.matchId];
                   const activeReason = geminiReason || statFallback?.text;
+                  const isExpanded = Boolean(expandedMatchIds[leg.matchId] && activeReason);
                   const isLoadingReason = Boolean(loadingMatchIds[leg.matchId]);
 
                   return (
-                    <div key={leg.matchId} className="flex flex-col gap-3 p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div key={leg.matchId} className="flex flex-col gap-2.5 p-3.5 sm:p-4">
+                      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
                             <span className="font-mono text-slate-500">#{idx + 1}</span>
                             <span>{leg.sport}</span>
                             <span aria-hidden="true">·</span>
@@ -787,10 +902,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                           <p className="font-display text-sm font-bold text-slate-100 sm:text-base">
                             {leg.homeTeam} vs. {leg.awayTeam}
                           </p>
-                          <div className="flex flex-wrap items-center gap-3 text-xs">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                             <span className="font-semibold text-emerald-300">{leg.recommendedPick}</span>
                             <span className="font-mono tabular-nums text-slate-300">
-                              Šance: {formatPercent(leg.aiProbability)}
+                              Šance {formatPercent(leg.aiProbability)}
                             </span>
                             <span
                               className={`font-mono tabular-nums ${
@@ -802,7 +917,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between gap-3 sm:justify-end shrink-0">
+                        <div className="flex items-center justify-between gap-3 shrink-0 sm:justify-end">
                           <div className="text-left sm:text-right">
                             <span className="block text-[11px] text-slate-400">Betano kurz</span>
                             <span className="font-mono text-base font-bold tabular-nums text-slate-100">
@@ -823,8 +938,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         </div>
                       </div>
 
-                      {/* On-Demand Analysis */}
-                      {activeReason ? (
+                      {/* On-Demand Collapsible AI Analysis */}
+                      {isExpanded && activeReason ? (
                         <div>
                           <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
                             <div className="flex items-center justify-between gap-2 text-[11px]">
@@ -832,10 +947,18 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                                 <Sparkles className="h-3 w-3 shrink-0" />
                                 <span>
                                   {geminiReason
-                                    ? `${aiModels[leg.matchId] ?? 'Gemini AI'} · AI analýza`
+                                    ? `${aiModels[leg.matchId] ?? 'gemini-3-flash-preview'} · AI analýza`
                                     : 'Statistický rozbor zápasu'}
                                 </span>
                               </span>
+                              <button
+                                type="button"
+                                onClick={() => handleCollapseAnalysis(leg.matchId)}
+                                className="inline-flex min-h-[30px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white"
+                              >
+                                <span>Sbalit</span>
+                                <ChevronUp className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                             {renderFormattedGeminiReasoning(activeReason)}
                           </div>
@@ -851,8 +974,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                             <button
                               type="button"
                               disabled={isLoadingReason}
-                              onClick={() => void handleFetchSingleAnalysis(leg)}
-                              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+                              onClick={() => void handleOpenOrFetchAnalysis(leg)}
+                              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
                             >
                               {isLoadingReason ? (
                                 <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
@@ -860,7 +983,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                                 <Sparkles className="h-3.5 w-3.5 shrink-0" />
                               )}
                               <span>
-                                {isLoadingReason ? 'Načítám analýzu...' : 'Zobrazit AI analýzu'}
+                                {isLoadingReason
+                                  ? 'Načítám analýzu...'
+                                  : activeReason
+                                  ? 'Zobrazit AI analýzu (uloženo)'
+                                  : 'Zobrazit AI analýzu'}
                               </span>
                             </button>
                           </div>
@@ -880,23 +1007,22 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               </div>
 
               {/* Stake Adjustment & 1-Click Save to Bankroll */}
-              <div className="mt-5 flex flex-col gap-3 border-t border-slate-800/80 pt-5 sm:flex-row sm:items-end sm:justify-between">
-                <div className="w-full sm:w-48">
+              <div className="mt-4 flex flex-col gap-3 border-t border-slate-800/80 pt-4 sm:flex-row sm:items-end sm:justify-between">
+                <div className="w-full sm:w-44">
                   <label htmlFor="actual-stake-input" className="block text-xs font-medium text-slate-400">
                     Vklad pro uložení (Kč)
                   </label>
                   <input
                     id="actual-stake-input"
-                    type="number"
-                    min={5}
-                    step={5}
-                    value={customStake}
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={customStakeInput}
                     onChange={(e) => {
-                      setCustomStake(Number(e.target.value));
+                      setCustomStakeInput(sanitizeIntegerInput(e.target.value));
                       setSavedFeedback(false);
                     }}
-                    onBlur={() => setCustomStake((s) => Math.max(5, Math.round(s || 5)))}
-                    className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+                    className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
                   />
                 </div>
 

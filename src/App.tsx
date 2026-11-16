@@ -2,8 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEMO_MATCHES, INITIAL_DEMO_TICKETS } from './data/demoMatches';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { fetchLiveOddsAndStats } from './services/oddsApiService';
-import { AppSettings, MatchAnalysis, Ticket } from './types/betting';
+import { AppSettings, MatchAnalysis, NotificationLeadMinutes, Ticket, TicketStatus } from './types/betting';
 import { copyMatchForBetano, formatCZK } from './utils/analyticsEngine';
+import {
+  checkAndSendMatchStartNotifications,
+  notifyTicketWinIfEligible,
+  requestBrowserNotificationPermission,
+} from './services/ticketNotificationService';
 import { AppTab, Navbar } from './components/Navbar';
 import { MatchFeed } from './components/MatchFeed';
 import { TicketGenerator } from './components/TicketGenerator';
@@ -19,6 +24,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
   demoMode: false,
   initialBankroll: 10000,
+  notificationsEnabled: false,
+  notificationLeadMinutes: 15,
 };
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
@@ -57,15 +64,29 @@ export default function App() {
   const [isSlipOpen, setIsSlipOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [highlightedWinTicketId, setHighlightedWinTicketId] = useState<string | null>(null);
   const lastAttemptedKeyRef = useRef<string | null>(null);
   const oddsCacheRef = useRef<OddsCache | null>(oddsCache);
   oddsCacheRef.current = oddsCache;
+  const winHighlightTimerRef = useRef<number | null>(null);
+  const prevTicketStatusesRef = useRef<Map<string, TicketStatus> | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage((prev) => (prev === msg ? null : prev));
     }, 3200);
+  }, []);
+
+  const triggerWinHighlight = useCallback((ticketId: string) => {
+    setHighlightedWinTicketId(ticketId);
+    if (winHighlightTimerRef.current !== null) {
+      window.clearTimeout(winHighlightTimerRef.current);
+    }
+    winHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedWinTicketId((prev) => (prev === ticketId ? null : prev));
+      winHighlightTimerRef.current = null;
+    }, 4200);
   }, []);
 
   const handleOpenBetano = useCallback(
@@ -168,6 +189,85 @@ export default function App() {
     return settings.initialBankroll + settledProfit;
   }, [tickets, settings.initialBankroll]);
 
+  const handleUpdateNotifications = useCallback(
+    async (enabled: boolean, leadMinutes: NotificationLeadMinutes) => {
+      if (enabled) {
+        const perm = await requestBrowserNotificationPermission();
+        if (perm === 'unsupported') {
+          setSettings((prev) => ({
+            ...prev,
+            notificationsEnabled: false,
+            notificationLeadMinutes: leadMinutes,
+          }));
+          showToast('Tento prohlížeč nepodporuje systémová oznámení.');
+          return;
+        }
+        if (perm === 'denied') {
+          setSettings((prev) => ({
+            ...prev,
+            notificationsEnabled: false,
+            notificationLeadMinutes: leadMinutes,
+          }));
+          showToast('Oznámení jsou v prohlížeči zakázána. Povolte je v nastavení stránky.');
+          return;
+        }
+        setSettings((prev) => ({
+          ...prev,
+          notificationsEnabled: perm === 'granted',
+          notificationLeadMinutes: leadMinutes,
+        }));
+        if (perm === 'granted') {
+          showToast(
+            leadMinutes === 15
+              ? 'Oznámení zapnuta (15 min před začátkem a výhry).'
+              : 'Oznámení zapnuta (přesně při začátku a výhry).'
+          );
+        }
+        return;
+      }
+
+      setSettings((prev) => ({
+        ...prev,
+        notificationsEnabled: false,
+        notificationLeadMinutes: leadMinutes,
+      }));
+    },
+    [setSettings, showToast]
+  );
+
+  useEffect(() => {
+    if (!settings.notificationsEnabled) return;
+    checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+    const intervalId = window.setInterval(() => {
+      checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+    }, 15000);
+    return () => window.clearInterval(intervalId);
+  }, [
+    tickets,
+    activeMatches,
+    settings.notificationsEnabled,
+    settings.notificationLeadMinutes,
+    settings,
+  ]);
+
+  useEffect(() => {
+    const prevMap = prevTicketStatusesRef.current;
+    if (prevMap !== null) {
+      for (const ticket of tickets) {
+        const prevStatus = prevMap.get(ticket.id);
+        if (prevStatus === 'pending' && ticket.status === 'won') {
+          triggerWinHighlight(ticket.id);
+          notifyTicketWinIfEligible(ticket, settings);
+        }
+      }
+    }
+    const nextMap = new Map<string, TicketStatus>();
+    for (const t of tickets) {
+      nextMap.set(t.id, t.status);
+    }
+    prevTicketStatusesRef.current = nextMap;
+  }, [tickets, settings, triggerWinHighlight]);
+
   const handleToggleMatchOnSlip = (match: MatchAnalysis) => {
     setSlipMatchIds((prev) => {
       if (prev.includes(match.id)) {
@@ -184,6 +284,7 @@ export default function App() {
   };
 
   const handleSettleTicket = (ticketId: string, status: 'won' | 'lost') => {
+    const targetTicket = tickets.find((t) => t.id === ticketId);
     setTickets((prev) =>
       prev.map((t) => {
         if (t.id !== ticketId) return t;
@@ -191,7 +292,17 @@ export default function App() {
         return { ...t, status, profit };
       })
     );
-    showToast(status === 'won' ? 'Tiket označen jako Výhra.' : 'Tiket označen jako Prohra.');
+    // Notify strictly on win; remain completely silent on loss
+    if (status === 'won' && targetTicket) {
+      const netProfit = targetTicket.potentialWin - targetTicket.actualStake;
+      if (netProfit > 0) {
+        showToast(
+          `🏆 Výherní tiket! Vyhrál jsi +${formatCZK(targetTicket.potentialWin)} (čistý zisk +${formatCZK(
+            netProfit
+          )})`
+        );
+      }
+    }
   };
 
   const handleDeleteTicket = (ticketId: string) => {
@@ -262,6 +373,11 @@ export default function App() {
           <BankrollStats
             tickets={tickets}
             initialBankroll={settings.initialBankroll}
+            activeMatches={activeMatches}
+            notificationsEnabled={Boolean(settings.notificationsEnabled)}
+            notificationLeadMinutes={settings.notificationLeadMinutes === 0 ? 0 : 15}
+            onUpdateNotifications={handleUpdateNotifications}
+            highlightedWinTicketId={highlightedWinTicketId}
             onSettleTicket={handleSettleTicket}
             onDeleteTicket={handleDeleteTicket}
             onResetDemoHistory={handleResetDemoHistory}

@@ -8,6 +8,20 @@ import {
   TicketStyle,
 } from '../types/betting';
 
+export function sanitizeIntegerInput(raw: string): string {
+  const digitsOnly = raw.replace(/\D+/g, '');
+  if (digitsOnly === '') return '';
+  return digitsOnly.replace(/^0+(?=\d)/, '');
+}
+
+export function parseAmountInput(raw: string, fallback: number, min = 5): number {
+  const trimmed = raw.trim();
+  if (!trimmed) return Math.max(min, Math.round(fallback));
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return Math.max(min, Math.round(fallback));
+  return Math.max(min, Math.round(parsed));
+}
+
 export function formatCZK(value: number): string {
   return new Intl.NumberFormat('cs-CZ', {
     style: 'currency',
@@ -354,6 +368,7 @@ function toLeg(m: MatchAnalysis): TicketLeg {
     homeTeam: m.homeTeam,
     awayTeam: m.awayTeam,
     kickoffTime: m.kickoffTime,
+    kickoffIso: m.kickoffIso,
     recommendedPick: m.recommendedPick,
     marketLabel: m.marketLabel,
     betanoOdds: m.odds.betano,
@@ -370,13 +385,14 @@ function toLeg(m: MatchAnalysis): TicketLeg {
 export interface GenerateTicketOptions {
   ticketStyle?: TicketStyle;
   minMatchProbability?: number;
+  exactLegsCount?: number | null;
 }
 
 /**
  * Generates an optimal ticket matching one of the 3 unified generator modes:
- * - 'safe' (Jistota): 1-2 highest-probability matches, ~10% budget (min 10 Kč)
- * - 'smart_value' (Vyvážený): 2-3 balanced +EV matches, ~7% budget (min 10 Kč)
- * - 'bold' (Odvážný): 3-4 highest-odds & highest Value % matches, ~5% budget (min 5 Kč)
+ * - 'safe' (Jistota): 1-2 highest-probability matches (or exactLegsCount), ~10% budget (min 10 Kč)
+ * - 'smart_value' (Vyvážený): 2-3 balanced +EV matches (or exactLegsCount), ~7% budget (min 10 Kč)
+ * - 'bold' (Odvážný): 3-4 highest-odds & highest Value % matches (or exactLegsCount), ~5% budget (min 5 Kč)
  */
 export function generateOptimalTicket(
   matches: MatchAnalysis[],
@@ -387,6 +403,12 @@ export function generateOptimalTicket(
   options: GenerateTicketOptions = {}
 ): GeneratedTicketResult | null {
   const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
+  const requestedExactLegs =
+    typeof options.exactLegsCount === 'number' &&
+    options.exactLegsCount >= 1 &&
+    options.exactLegsCount <= 4
+      ? Math.round(options.exactLegsCount)
+      : null;
 
   const sportPool = matches.filter((m) => selectedSports.includes(m.sport));
   const eligible = sportPool.filter(
@@ -394,7 +416,8 @@ export function generateOptimalTicket(
   );
   if (eligible.length === 0) return null;
 
-  const isLowProbCapped = ticketStyle === 'smart_value' && minMatchProbability < 45;
+  const isLowProbCapped =
+    requestedExactLegs === null && ticketStyle === 'smart_value' && minMatchProbability < 45;
 
   let candidatePool: MatchAnalysis[];
   let minLegs: number;
@@ -414,7 +437,8 @@ export function generateOptimalTicket(
   } else if (ticketStyle === 'smart_value') {
     // Vyvážený (Smart Value): 2-3 matches combining good probability and non-negative Value % (never < 0.0 %)
     const positiveEligible = eligible.filter((m) => m.valueScore > 0);
-    const basePool = positiveEligible.length >= 2 ? positiveEligible : eligible;
+    const minNeeded = requestedExactLegs ?? 2;
+    const basePool = positiveEligible.length >= minNeeded ? positiveEligible : eligible;
 
     candidatePool = [...basePool].sort((a, b) => {
       const marketEdgeA = ((a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg)) * 100;
@@ -435,6 +459,12 @@ export function generateOptimalTicket(
     });
     minLegs = Math.min(3, candidatePool.length);
     maxLegs = Math.min(4, candidatePool.length);
+  }
+
+  if (requestedExactLegs !== null) {
+    const exactTarget = Math.min(requestedExactLegs, candidatePool.length);
+    minLegs = exactTarget;
+    maxLegs = exactTarget;
   }
 
   const candidates = candidatePool.slice(0, 14);
@@ -514,21 +544,21 @@ export function generateOptimalTicket(
 
   let note: string;
   if (ticketStyle === 'safe') {
-    note = `Režim Jistota (Konzervativní): ${legs.length} ${
-      legs.length === 1 ? 'nejbezpečnější zápas' : 'nejbezpečnější zápasy'
-    } s nejvyšší šancí na výhru nad ${minMatchProbability} %.`;
+    note = `Režim Jistota: ${legs.length} ${
+      legs.length === 1 ? 'nejbezpečnější zápas' : legs.length <= 4 ? 'nejbezpečnější zápasy' : 'nejbezpečnějších zápasů'
+    } s šancí nad ${minMatchProbability} %.`;
   } else if (ticketStyle === 'smart_value') {
     note = isLowProbCapped
-      ? `Režim Vyvážený (Smart Value) omezen na ${
+      ? `Režim Vyvážený omezen na ${
           legs.length === 1 ? 'sólo (1 zápas)' : 'double (2 zápasy)'
         } kvůli limitu pod 45 % (Value ${formatPercent(avgValue, true)}).`
-      : `Režim Vyvážený (Smart Value): ${legs.length} ${
-          legs.length <= 4 ? 'zápasy' : 'zápasů'
-        } kombinující šanci nad ${minMatchProbability} % a průměrné Value ${formatPercent(avgValue, true)}.`;
+      : `Režim Vyvážený: ${legs.length} ${
+          legs.length === 1 ? 'zápas' : legs.length <= 4 ? 'zápasy' : 'zápasů'
+        } kombinující šanci nad ${minMatchProbability} % a Value ${formatPercent(avgValue, true)}.`;
   } else {
-    note = `Režim Odvážný (Vyšší kurz): ${legs.length} ${
-      legs.length <= 4 ? 'zápasy' : 'zápasů'
-    } s nejvyšším kurzem a odchylkou Value ${formatPercent(avgValue, true)}.`;
+    note = `Režim Odvážný: ${legs.length} ${
+      legs.length === 1 ? 'zápas' : legs.length <= 4 ? 'zápasy' : 'zápasů'
+    } s nejvyšším kurzem a Value ${formatPercent(avgValue, true)}.`;
   }
 
   return {

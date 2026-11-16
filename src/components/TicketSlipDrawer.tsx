@@ -7,6 +7,8 @@ import {
   formatCZK,
   formatOdds,
   formatPercent,
+  parseAmountInput,
+  sanitizeIntegerInput,
 } from '../utils/analyticsEngine';
 
 interface TicketSlipDrawerProps {
@@ -41,21 +43,24 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
       ? calculateSafeStake(currentBankroll, totalOdds, jointProb, 'Vlastní')
       : 0;
 
-  const [stake, setStake] = useState<number>(recommendedStake || 200);
+  const [stakeInput, setStakeInput] = useState<string>(() => String(recommendedStake || 200));
 
   useEffect(() => {
     if (recommendedStake > 0) {
-      setStake(recommendedStake);
+      setStakeInput(String(recommendedStake));
     }
   }, [recommendedStake]);
 
   if (!isOpen) return null;
 
-  const potentialWin = Math.round(Math.max(5, stake || 5) * totalOdds);
+  const parsedStake = Number(stakeInput);
+  const previewStake =
+    stakeInput === '' || !Number.isFinite(parsedStake) ? 0 : Math.round(parsedStake);
+  const potentialWin = Math.round(previewStake * totalOdds);
 
   const handleSave = () => {
     if (selectedMatches.length === 0) return;
-    const actualStake = Math.max(5, Math.round(stake || 5));
+    const actualStake = parseAmountInput(stakeInput, recommendedStake || 200, 5);
     const ticket: Ticket = {
       id: `tkt-manual-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -70,6 +75,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
         homeTeam: m.homeTeam,
         awayTeam: m.awayTeam,
         kickoffTime: m.kickoffTime,
+        kickoffIso: m.kickoffIso,
         recommendedPick: m.recommendedPick,
         marketLabel: m.marketLabel,
         betanoOdds: m.odds.betano,
@@ -211,13 +217,12 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                 </label>
                 <input
                   id="slip-stake"
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={stake}
-                  onChange={(e) => setStake(Number(e.target.value))}
-                  onBlur={() => setStake((s) => Math.max(5, Math.round(s || 5)))}
-                  className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3 font-mono text-sm font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="0"
+                  value={stakeInput}
+                  onChange={(e) => setStakeInput(sanitizeIntegerInput(e.target.value))}
+                  className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3 font-mono text-sm font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
                 />
               </div>
               <button

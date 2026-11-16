@@ -11629,6 +11629,18 @@ function registerSW(options = {}) {
 	return updateServiceWorker;
 }
 // src/utils/analyticsEngine.ts
+function sanitizeIntegerInput(raw) {
+	const digitsOnly = raw.replace(/\D+/g, "");
+	if (digitsOnly === "") return "";
+	return digitsOnly.replace(/^0+(?=\d)/, "");
+}
+function parseAmountInput(raw, fallback, min = 5) {
+	const trimmed = raw.trim();
+	if (!trimmed) return Math.max(min, Math.round(fallback));
+	const parsed = Number(trimmed);
+	if (!Number.isFinite(parsed) || parsed <= 0) return Math.max(min, Math.round(fallback));
+	return Math.max(min, Math.round(parsed));
+}
 function formatCZK(value) {
 	return new Intl.NumberFormat("cs-CZ", {
 		style: "currency",
@@ -11840,6 +11852,7 @@ function toLeg(m) {
 		homeTeam: m.homeTeam,
 		awayTeam: m.awayTeam,
 		kickoffTime: m.kickoffTime,
+		kickoffIso: m.kickoffIso,
 		recommendedPick: m.recommendedPick,
 		marketLabel: m.marketLabel,
 		betanoOdds: m.odds.betano,
@@ -11854,15 +11867,16 @@ function toLeg(m) {
 }
 /**
 * Generates an optimal ticket matching one of the 3 unified generator modes:
-* - 'safe' (Jistota): 1-2 highest-probability matches, ~10% budget (min 10 Kč)
-* - 'smart_value' (Vyvážený): 2-3 balanced +EV matches, ~7% budget (min 10 Kč)
-* - 'bold' (Odvážný): 3-4 highest-odds & highest Value % matches, ~5% budget (min 5 Kč)
+* - 'safe' (Jistota): 1-2 highest-probability matches (or exactLegsCount), ~10% budget (min 10 Kč)
+* - 'smart_value' (Vyvážený): 2-3 balanced +EV matches (or exactLegsCount), ~7% budget (min 10 Kč)
+* - 'bold' (Odvážný): 3-4 highest-odds & highest Value % matches (or exactLegsCount), ~5% budget (min 5 Kč)
 */
 function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, variationIndex = 0, options = {}) {
 	const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
+	const requestedExactLegs = typeof options.exactLegsCount === "number" && options.exactLegsCount >= 1 && options.exactLegsCount <= 4 ? Math.round(options.exactLegsCount) : null;
 	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0);
 	if (eligible.length === 0) return null;
-	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
+	const isLowProbCapped = requestedExactLegs === null && ticketStyle === "smart_value" && minMatchProbability < 45;
 	let candidatePool;
 	let minLegs;
 	let maxLegs;
@@ -11877,7 +11891,8 @@ function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, var
 		maxLegs = Math.min(2, candidatePool.length);
 	} else if (ticketStyle === "smart_value") {
 		const positiveEligible = eligible.filter((m) => m.valueScore > 0);
-		candidatePool = [...positiveEligible.length >= 2 ? positiveEligible : eligible].sort((a, b) => {
+		const minNeeded = requestedExactLegs ?? 2;
+		candidatePool = [...positiveEligible.length >= minNeeded ? positiveEligible : eligible].sort((a, b) => {
 			const marketEdgeA = (a.odds.betano - a.odds.marketAvg) / Math.max(1, a.odds.marketAvg) * 100;
 			const marketEdgeB = (b.odds.betano - b.odds.marketAvg) / Math.max(1, b.odds.marketAvg) * 100;
 			const scoreA = a.valueScore * 3 + a.aiProbability * .9 + marketEdgeA * 1.2;
@@ -11892,6 +11907,11 @@ function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, var
 		});
 		minLegs = Math.min(3, candidatePool.length);
 		maxLegs = Math.min(4, candidatePool.length);
+	}
+	if (requestedExactLegs !== null) {
+		const exactTarget = Math.min(requestedExactLegs, candidatePool.length);
+		minLegs = exactTarget;
+		maxLegs = exactTarget;
 	}
 	const candidates = candidatePool.slice(0, 14);
 	const validCombos = [];
@@ -11941,9 +11961,9 @@ function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, var
 	const estimatedRisk = computeEstimatedRisk(chosen.jointProb);
 	const avgValue = legs.reduce((s, l) => s + l.valueScore, 0) / legs.length;
 	let note;
-	if (ticketStyle === "safe") note = `Režim Jistota (Konzervativní): ${legs.length} ${legs.length === 1 ? "nejbezpečnější zápas" : "nejbezpečnější zápasy"} s nejvyšší šancí na výhru nad ${minMatchProbability} %.`;
-	else if (ticketStyle === "smart_value") note = isLowProbCapped ? `Režim Vyvážený (Smart Value) omezen na ${legs.length === 1 ? "sólo (1 zápas)" : "double (2 zápasy)"} kvůli limitu pod 45 % (Value ${formatPercent(avgValue, true)}).` : `Režim Vyvážený (Smart Value): ${legs.length} ${legs.length <= 4 ? "zápasy" : "zápasů"} kombinující šanci nad ${minMatchProbability} % a průměrné Value ${formatPercent(avgValue, true)}.`;
-	else note = `Režim Odvážný (Vyšší kurz): ${legs.length} ${legs.length <= 4 ? "zápasy" : "zápasů"} s nejvyšším kurzem a odchylkou Value ${formatPercent(avgValue, true)}.`;
+	if (ticketStyle === "safe") note = `Režim Jistota: ${legs.length} ${legs.length === 1 ? "nejbezpečnější zápas" : legs.length <= 4 ? "nejbezpečnější zápasy" : "nejbezpečnějších zápasů"} s šancí nad ${minMatchProbability} %.`;
+	else if (ticketStyle === "smart_value") note = isLowProbCapped ? `Režim Vyvážený omezen na ${legs.length === 1 ? "sólo (1 zápas)" : "double (2 zápasy)"} kvůli limitu pod 45 % (Value ${formatPercent(avgValue, true)}).` : `Režim Vyvážený: ${legs.length} ${legs.length === 1 ? "zápas" : legs.length <= 4 ? "zápasy" : "zápasů"} kombinující šanci nad ${minMatchProbability} % a Value ${formatPercent(avgValue, true)}.`;
+	else note = `Režim Odvážný: ${legs.length} ${legs.length === 1 ? "zápas" : legs.length <= 4 ? "zápasy" : "zápasů"} s nejvyšším kurzem a Value ${formatPercent(avgValue, true)}.`;
 	return {
 		legs,
 		totalOdds: chosen.totalOdds,
@@ -13302,6 +13322,218 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 		apiSportsWarning
 	};
 }
+// src/services/ticketNotificationService.ts
+var NOTIFIED_TICKETS_STORAGE_KEY = "betedge_notified_tickets_v1";
+var CZECH_WEEKDAYS = {
+	neděle: 0,
+	pondělí: 1,
+	úterý: 2,
+	středa: 3,
+	čtvrtek: 4,
+	pátek: 5,
+	sobota: 6
+};
+function isBrowserNotificationSupported() {
+	return typeof window !== "undefined" && "Notification" in window;
+}
+function getBrowserNotificationPermission() {
+	if (!isBrowserNotificationSupported()) return "unsupported";
+	return window.Notification.permission;
+}
+async function requestBrowserNotificationPermission() {
+	if (!isBrowserNotificationSupported()) return "unsupported";
+	try {
+		if (window.Notification.permission === "granted") return "granted";
+		return await window.Notification.requestPermission();
+	} catch {
+		return window.Notification.permission ?? "denied";
+	}
+}
+function loadNotifiedTicketsMap() {
+	if (typeof window === "undefined") return {};
+	try {
+		const raw = window.localStorage.getItem(NOTIFIED_TICKETS_STORAGE_KEY);
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+		return parsed;
+	} catch {
+		return {};
+	}
+}
+function saveNotifiedTicketsMap(map) {
+	if (typeof window === "undefined") return;
+	try {
+		const cutoff = Date.now() - 5184e6;
+		const pruned = {};
+		for (const [id, rec] of Object.entries(map)) if (rec && typeof rec === "object" && (rec.updatedAt ?? Date.now()) >= cutoff) pruned[id] = rec;
+		window.localStorage.setItem(NOTIFIED_TICKETS_STORAGE_KEY, JSON.stringify(pruned));
+	} catch {}
+}
+function markTicketNotified(ticketId, kind) {
+	const map = loadNotifiedTicketsMap();
+	const prev = map[ticketId] ?? { updatedAt: Date.now() };
+	map[ticketId] = {
+		...prev,
+		startNotified: kind === "start" ? true : prev.startNotified,
+		winNotified: kind === "win" ? true : prev.winNotified,
+		updatedAt: Date.now()
+	};
+	saveNotifiedTicketsMap(map);
+	return map;
+}
+function parseKickoffTimeFallback(kickoffTime, ticketCreatedAtIso) {
+	const baseMs = Date.parse(ticketCreatedAtIso);
+	const baseDate = Number.isFinite(baseMs) ? new Date(baseMs) : /* @__PURE__ */ new Date();
+	const clean = kickoffTime.trim();
+	const dateMatch = clean.match(/^(\d{1,2})\.(\d{1,2})\.\s+(\d{1,2}):(\d{2})$/);
+	if (dateMatch) {
+		const day = Number(dateMatch[1]);
+		const month = Number(dateMatch[2]) - 1;
+		const hour = Number(dateMatch[3]);
+		const minute = Number(dateMatch[4]);
+		const dt = new Date(baseDate.getFullYear(), month, day, hour, minute, 0, 0);
+		return Number.isFinite(dt.getTime()) ? dt.getTime() : null;
+	}
+	const relMatch = clean.match(/^([A-Za-zÀ-ž]+)\s+(\d{1,2}):(\d{2})$/);
+	if (relMatch) {
+		const dayToken = relMatch[1].toLowerCase();
+		const hour = Number(relMatch[2]);
+		const minute = Number(relMatch[3]);
+		const dt = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hour, minute, 0, 0);
+		if (dayToken === "dnes") return dt.getTime();
+		if (dayToken === "zítra") {
+			dt.setDate(dt.getDate() + 1);
+			return dt.getTime();
+		}
+		if (dayToken in CZECH_WEEKDAYS) {
+			const deltaDays = (CZECH_WEEKDAYS[dayToken] - dt.getDay() + 7) % 7;
+			dt.setDate(dt.getDate() + deltaDays);
+			return dt.getTime();
+		}
+	}
+	if (clean.toLowerCase().includes("vlastní") && Number.isFinite(baseMs)) return baseMs;
+	return null;
+}
+function resolveLegKickoffTimestamp(leg, ticketCreatedAtIso, activeMatches = []) {
+	if (leg.kickoffIso) {
+		const parsed = Date.parse(leg.kickoffIso);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	const matched = activeMatches.find((m) => m.id === leg.matchId);
+	if (matched?.kickoffIso) {
+		const parsed = Date.parse(matched.kickoffIso);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return parseKickoffTimeFallback(leg.kickoffTime, ticketCreatedAtIso);
+}
+function getTicketEarliestMatchInfo(ticket, activeMatches = []) {
+	let earliest = null;
+	for (const leg of ticket.legs) {
+		const kickoffMs = resolveLegKickoffTimestamp(leg, ticket.createdAt, activeMatches);
+		if (kickoffMs === null) continue;
+		if (!earliest || kickoffMs < earliest.kickoffMs) earliest = {
+			leg,
+			kickoffMs
+		};
+	}
+	return earliest;
+}
+function formatTicketCountdownStatus(ticket, nowMs, activeMatches = []) {
+	if (ticket.status !== "pending") return null;
+	const earliest = getTicketEarliestMatchInfo(ticket, activeMatches);
+	if (!earliest) return null;
+	const { leg, kickoffMs } = earliest;
+	const matchTitle = `${leg.homeTeam} vs. ${leg.awayTeam}`;
+	const diffMs = kickoffMs - nowMs;
+	if (diffMs <= 0) return {
+		state: "live",
+		label: "Právě se hraje",
+		kickoffMs,
+		matchTitle
+	};
+	const totalMinutes = Math.max(1, Math.ceil(diffMs / 6e4));
+	if (totalMinutes < 60) return {
+		state: "upcoming",
+		label: `Začíná za ${totalMinutes} min`,
+		kickoffMs,
+		matchTitle
+	};
+	if (totalMinutes < 1440) {
+		const hours = Math.floor(totalMinutes / 60);
+		const mins = totalMinutes % 60;
+		return {
+			state: "upcoming",
+			label: mins === 0 ? `Začíná za ${hours} h` : `Začíná za ${hours} h ${mins} min`,
+			kickoffMs,
+			matchTitle
+		};
+	}
+	const days = Math.floor(totalMinutes / 1440);
+	const remHours = Math.floor(totalMinutes % 1440 / 60);
+	const daysWord = days === 1 ? "1 den" : days <= 4 ? `${days} dny` : `${days} dnů`;
+	return {
+		state: "upcoming",
+		label: remHours > 0 ? `Začíná za ${daysWord} ${remHours} h` : `Začíná za ${daysWord}`,
+		kickoffMs,
+		matchTitle
+	};
+}
+function sendBrowserNotification(title, body, tag) {
+	if (!isBrowserNotificationSupported() || window.Notification.permission !== "granted") return false;
+	try {
+		new window.Notification(title, {
+			body,
+			tag,
+			icon: "/pwa-192x192.png"
+		});
+		return true;
+	} catch {
+		if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+			navigator.serviceWorker.getRegistration().then((reg) => {
+				if (reg) return reg.showNotification(title, {
+					body,
+					tag,
+					icon: "/pwa-192x192.png"
+				});
+			}).catch(() => {});
+			return true;
+		}
+		return false;
+	}
+}
+function checkAndSendMatchStartNotifications(tickets, settings, activeMatches = [], nowMs = Date.now()) {
+	if (!settings.notificationsEnabled) return 0;
+	if (!isBrowserNotificationSupported() || window.Notification.permission !== "granted") return 0;
+	const leadMs = (settings.notificationLeadMinutes === 0 ? 0 : 15) * 60 * 1e3;
+	const notifiedMap = loadNotifiedTicketsMap();
+	let sentCount = 0;
+	for (const ticket of tickets) {
+		if (ticket.status !== "pending") continue;
+		if (notifiedMap[ticket.id]?.startNotified) continue;
+		const earliest = getTicketEarliestMatchInfo(ticket, activeMatches);
+		if (!earliest) continue;
+		const msUntilStart = earliest.kickoffMs - nowMs;
+		if (msUntilStart > leadMs || msUntilStart < -144e5) continue;
+		const matchName = `${earliest.leg.homeTeam} vs. ${earliest.leg.awayTeam}`;
+		if (sendBrowserNotification(msUntilStart <= 0 ? `Právě začíná: ${matchName}` : `Začíná za ${Math.max(1, Math.ceil(msUntilStart / 6e4))} min: ${matchName}`, `Tiket: ${ticket.label} · Vklad ${formatCZK(ticket.actualStake)} · Možná výhra ${formatCZK(ticket.potentialWin)}`, `betedge-start-${ticket.id}`)) {
+			markTicketNotified(ticket.id, "start");
+			sentCount += 1;
+		}
+	}
+	return sentCount;
+}
+function notifyTicketWinIfEligible(ticket, settings) {
+	if (ticket.status !== "won" || ticket.profit <= 0) return false;
+	if (!settings.notificationsEnabled) return false;
+	if (!isBrowserNotificationSupported() || window.Notification.permission !== "granted") return false;
+	if (loadNotifiedTicketsMap()[ticket.id]?.winNotified) return false;
+	if (sendBrowserNotification("🏆 Výherní tiket!", `Vyhrál jsi +${formatCZK(ticket.potentialWin)} (čistý zisk +${formatCZK(ticket.profit)}) · ${ticket.label}`, `betedge-win-${ticket.id}`)) {
+		markTicketNotified(ticket.id, "win");
+		return true;
+	}
+	return false;
+}
 // node_modules/lucide-react/dist/esm/shared/src/utils.js
 /**
 * @license lucide-react v0.546.0 - ISC
@@ -13398,6 +13630,67 @@ var ArrowUpDown = createLucideIcon("arrow-up-down", [
 		key: "1glfcx"
 	}]
 ]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var BellOff = createLucideIcon("bell-off", [
+	["path", {
+		d: "M10.268 21a2 2 0 0 0 3.464 0",
+		key: "vwvbt9"
+	}],
+	["path", {
+		d: "M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742",
+		key: "178tsu"
+	}],
+	["path", {
+		d: "m2 2 20 20",
+		key: "1ooewy"
+	}],
+	["path", {
+		d: "M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05",
+		key: "1hqiys"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var BellRing = createLucideIcon("bell-ring", [
+	["path", {
+		d: "M10.268 21a2 2 0 0 0 3.464 0",
+		key: "vwvbt9"
+	}],
+	["path", {
+		d: "M22 8c0-2.3-.8-4.3-2-6",
+		key: "5bb3ad"
+	}],
+	["path", {
+		d: "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326",
+		key: "11g9vi"
+	}],
+	["path", {
+		d: "M4 2C2.8 3.7 2 5.7 2 8",
+		key: "tap9e0"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var Bell = createLucideIcon("bell", [["path", {
+	d: "M10.268 21a2 2 0 0 0 3.464 0",
+	key: "vwvbt9"
+}], ["path", {
+	d: "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326",
+	key: "11g9vi"
+}]]);
 /**
 * @license lucide-react v0.546.0 - ISC
 *
@@ -13512,6 +13805,36 @@ var Check = createLucideIcon("check", [["path", {
 var ChevronDown = createLucideIcon("chevron-down", [["path", {
 	d: "m6 9 6 6 6-6",
 	key: "qrunsl"
+}]]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var ChevronLeft = createLucideIcon("chevron-left", [["path", {
+	d: "m15 18-6-6 6-6",
+	key: "1wnfg3"
+}]]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var ChevronRight = createLucideIcon("chevron-right", [["path", {
+	d: "m9 18 6-6-6-6",
+	key: "mthhwq"
+}]]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var ChevronUp = createLucideIcon("chevron-up", [["path", {
+	d: "m18 15-6-6-6 6",
+	key: "153udz"
 }]]);
 /**
 * @license lucide-react v0.546.0 - ISC
@@ -13696,19 +14019,6 @@ var Layers = createLucideIcon("layers", [
 		key: "kqbvx6"
 	}]
 ]);
-/**
-* @license lucide-react v0.546.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
-var Plus = createLucideIcon("plus", [["path", {
-	d: "M5 12h14",
-	key: "1ays0h"
-}], ["path", {
-	d: "M12 5v14",
-	key: "s699le"
-}]]);
 /**
 * @license lucide-react v0.546.0 - ISC
 *
@@ -14172,140 +14482,6 @@ var Navbar = ({ activeTab, onSelectTab, slipCount, onOpenSlip }) => {
 		})
 	})] });
 };
-// src/hooks/usePWAInstall.ts
-function usePWAInstall() {
-	const [deferredPrompt, setDeferredPrompt] = (0, import_react.useState)(null);
-	const [isInstalled, setIsInstalled] = (0, import_react.useState)(false);
-	const [isIOS, setIsIOS] = (0, import_react.useState)(false);
-	(0, import_react.useEffect)(() => {
-		const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-		setIsInstalled(isStandalone);
-		const userAgent = window.navigator.userAgent.toLowerCase();
-		const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
-		setIsIOS(isIOSDevice);
-		const handleBeforeInstallPrompt = (e) => {
-			e.preventDefault();
-			setDeferredPrompt(e);
-		};
-		const handleAppInstalled = () => {
-			setIsInstalled(true);
-			setDeferredPrompt(null);
-		};
-		window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-		window.addEventListener("appinstalled", handleAppInstalled);
-		return () => {
-			window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-			window.removeEventListener("appinstalled", handleAppInstalled);
-		};
-	}, []);
-	const install = async () => {
-		if (!deferredPrompt) return false;
-		await deferredPrompt.prompt();
-		const { outcome } = await deferredPrompt.userChoice;
-		if (outcome === "accepted") {
-			setIsInstalled(true);
-			setDeferredPrompt(null);
-			return true;
-		}
-		return false;
-	};
-	return {
-		isInstallable: !!deferredPrompt,
-		isInstalled,
-		isIOS,
-		install
-	};
-}
-// src/components/PWAInstallButton.tsx
-var PWAInstallButton = ({ variant = "compact" }) => {
-	const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
-	const [showIOSGuide, setShowIOSGuide] = (0, import_react.useState)(false);
-	if (isInstalled) return variant === "full" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-		className: "rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300",
-		children: "Aplikace BetEdge AI je již nainstalována jako samostatná aplikace."
-	}) : null;
-	if (isInstallable) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-		type: "button",
-		onClick: install,
-		className: `inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-visible:outline-2 focus-visible:outline-emerald-400 whitespace-nowrap shrink-0 ${variant === "full" ? "w-full sm:w-auto" : ""}`,
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Nainstalovat aplikaci (PWA)" })]
-	});
-	if (isIOS) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-		type: "button",
-		onClick: () => setShowIOSGuide(true),
-		className: `inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 whitespace-nowrap shrink-0 ${variant === "full" ? "w-full sm:w-auto" : ""}`,
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Share, { className: "h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Přidat na plochu (iOS)" })]
-	}), showIOSGuide && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-		className: "fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm",
-		role: "dialog",
-		"aria-modal": "true",
-		"aria-labelledby": "ios-install-title",
-		children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-			className: "w-full max-w-sm rounded-2xl border border-slate-800 bg-[#111827] p-6 shadow-2xl",
-			children: [
-				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "flex items-start justify-between gap-4",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
-						id: "ios-install-title",
-						className: "text-lg font-bold text-slate-100",
-						children: "Instalace na iPhone / iPad"
-					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-						type: "button",
-						onClick: () => setShowIOSGuide(false),
-						className: "flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100",
-						"aria-label": "Zavřít návod",
-						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "h-5 w-5" })
-					})]
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("ol", {
-					className: "mt-4 space-y-3 text-sm text-slate-300",
-					children: [
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
-							"1. Klepněte na ikonu ",
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Sdílet" }),
-							" ve spodní liště Safari."
-						] }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
-							"2. Posuňte nabídku níže a vyberte ",
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Přidat na plochu" }),
-							"."
-						] }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
-							"3. Potvrďte tlačítkem ",
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Přidat" }),
-							" v pravém horním rohu."
-						] })
-					]
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					onClick: () => setShowIOSGuide(false),
-					className: "mt-6 min-h-[44px] w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500",
-					children: "Rozumím"
-				})
-			]
-		})
-	})] });
-	if (variant === "full") return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-		className: "rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-relaxed text-slate-400",
-		children: [
-			"V mobilním prohlížeči Chrome otevřete menu prohlížeče (tři tečky) a zvolte",
-			" ",
-			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-				className: "font-semibold text-slate-200",
-				children: "Přidat na plochu"
-			}),
-			" nebo",
-			" ",
-			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-				className: "font-semibold text-slate-200",
-				children: "Nainstalovat aplikaci"
-			}),
-			"."
-		]
-	});
-	return null;
-};
 // src/components/MatchFeed.tsx
 var SPORT_FILTERS = [
 	"Vše",
@@ -14326,93 +14502,79 @@ var TIME_WINDOWS = [
 ];
 var SORT_OPTIONS = [
 	{
-		id: "probability",
-		label: "Nejvyšší pravděpodobnost",
-		description: "AI šance % od nejvyšší po nejnižší · bezpeční favorité"
+		id: "value",
+		label: "Nejvyšší Value"
 	},
 	{
-		id: "value",
-		label: "Nejvyšší Value",
-		description: "+EV % od nejvyššího po nejnižší"
+		id: "probability",
+		label: "Nejvyšší pravděpodobnost"
 	},
 	{
 		id: "kickoff",
-		label: "Čas výkopu",
-		description: "Od nejbližších nadcházejících zápasů"
+		label: "Čas výkopu"
 	},
 	{
 		id: "lowest_odds",
-		label: "Nejnižší kurz",
-		description: "Od největších favoritů s kurzem blízko 1.00"
+		label: "Nejnižší kurz"
 	}
 ];
-function FormSequence({ label, form }) {
-	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-		className: "flex items-center justify-between gap-2 text-xs",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-			className: "truncate text-slate-400",
-			children: label
-		}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-			className: "flex items-center gap-1 font-mono tabular-nums shrink-0",
-			"aria-label": `Forma ${form.join(" ")}`,
-			children: form.map((res, idx) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-				className: `inline-flex h-5 w-5 items-center justify-center rounded text-[11px] font-semibold ${res === "V" ? "bg-emerald-500/15 text-emerald-300" : res === "R" ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/15 text-rose-300"}`,
-				children: res
-			}, idx))
-		})]
+function isMatchPositiveValue(m) {
+	return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0;
+}
+function getKickoffTimestamp(m) {
+	const parsed = Date.parse(m.kickoffIso);
+	return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+}
+function formatCompactUpdatedTime(timestampMs) {
+	if (!timestampMs || !Number.isFinite(timestampMs)) return null;
+	const dt = new Date(timestampMs);
+	const hhmm = dt.toLocaleTimeString("cs-CZ", {
+		hour: "2-digit",
+		minute: "2-digit"
 	});
+	if (dt.toDateString() === (/* @__PURE__ */ new Date()).toDateString()) return `Aktualizováno ${hhmm}`;
+	return `Aktualizováno ${dt.toLocaleDateString("cs-CZ", {
+		day: "2-digit",
+		month: "2-digit"
+	})} ${hhmm}`;
 }
 var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano, isDemoMode, isLoadingLive, liveError, lastUpdatedAt, onRefreshLive, onOpenSettings, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const [sportFilter, setSportFilter] = (0, import_react.useState)("Vše");
 	const [timeWindow, setTimeWindow] = (0, import_react.useState)("Dnes");
 	const [onlyValueBets, setOnlyValueBets] = (0, import_react.useState)(false);
 	const [sortMode, setSortMode] = (0, import_react.useState)("value");
-	const [isSortMenuOpen, setIsSortMenuOpen] = (0, import_react.useState)(false);
 	const [searchQuery, setSearchQuery] = (0, import_react.useState)("");
-	const sortContainerRef = (0, import_react.useRef)(null);
-	(0, import_react.useEffect)(() => {
-		if (!isSortMenuOpen) return;
-		const handleKeyDown = (e) => {
-			if (e.key === "Escape") setIsSortMenuOpen(false);
-		};
-		const handleClickOutside = (e) => {
-			if (sortContainerRef.current && !sortContainerRef.current.contains(e.target)) setIsSortMenuOpen(false);
-		};
-		window.addEventListener("keydown", handleKeyDown);
-		document.addEventListener("mousedown", handleClickOutside);
-		return () => {
-			window.removeEventListener("keydown", handleKeyDown);
-			document.removeEventListener("mousedown", handleClickOutside);
-		};
-	}, [isSortMenuOpen]);
 	const summaryStats = (0, import_react.useMemo)(() => {
-		const positive = matches.filter((m) => m.valueScore > 0);
-		const maxVal = positive.length > 0 ? Math.max(...positive.map((m) => m.valueScore)) : 0;
-		const avgVal = positive.length > 0 ? positive.reduce((sum, m) => sum + m.valueScore, 0) / positive.length : 0;
+		const positiveCount = matches.filter(isMatchPositiveValue).length;
 		return {
 			totalMatches: matches.length,
-			valueCount: positive.length,
-			maxVal,
-			avgVal
+			valueCount: positiveCount
 		};
 	}, [matches]);
 	const filteredMatches = (0, import_react.useMemo)(() => {
 		const q = searchQuery.trim().toLowerCase();
-		const copy = [...matches.filter((m) => {
+		const sorted = [...matches.filter((m) => {
 			if (sportFilter !== "Vše" && m.sport !== sportFilter) return false;
 			if (timeWindow !== "Vše" && m.timeWindow !== timeWindow) return false;
-			if (onlyValueBets && m.valueScore <= 0) return false;
+			if (onlyValueBets && !isMatchPositiveValue(m)) return false;
 			if (q) {
 				if (!`${m.homeTeam} ${m.awayTeam} ${m.league} ${m.recommendedPick}`.toLowerCase().includes(q)) return false;
 			}
 			return true;
 		})];
 		switch (sortMode) {
-			case "probability": return copy.sort((a, b) => b.aiProbability - a.aiProbability || b.valueScore - a.valueScore);
-			case "value": return copy.sort((a, b) => b.valueScore - a.valueScore || b.aiProbability - a.aiProbability);
-			case "lowest_odds": return copy.sort((a, b) => a.odds.betano - b.odds.betano || b.aiProbability - a.aiProbability);
-			default: return copy.sort((a, b) => a.kickoffIso.localeCompare(b.kickoffIso));
+			case "probability":
+				sorted.sort((a, b) => Number(b.aiProbability) - Number(a.aiProbability) || Number(b.valueScore) - Number(a.valueScore));
+				break;
+			case "value":
+				sorted.sort((a, b) => Number(b.valueScore) - Number(a.valueScore) || Number(b.aiProbability) - Number(a.aiProbability));
+				break;
+			case "lowest_odds":
+				sorted.sort((a, b) => Number(a.odds.betano) - Number(b.odds.betano) || Number(b.aiProbability) - Number(a.aiProbability));
+				break;
+			default: sorted.sort((a, b) => getKickoffTimestamp(a) - getKickoffTimestamp(b) || Number(b.valueScore) - Number(a.valueScore));
 		}
+		return sorted;
 	}, [
 		matches,
 		sportFilter,
@@ -14421,122 +14583,69 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 		sortMode,
 		searchQuery
 	]);
-	const activeSortOption = SORT_OPTIONS.find((opt) => opt.id === sortMode) ?? SORT_OPTIONS[1];
+	const compactTimeLabel = formatCompactUpdatedTime(lastUpdatedAt);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-		className: "space-y-6",
+		className: "space-y-3.5 sm:space-y-4",
 		children: [
 			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-				className: "flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between",
+				"aria-label": "Stav kurzů a rychlé akce",
+				className: "flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800/90 bg-[#111827] px-3.5 py-2.5 sm:px-4",
 				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "space-y-1.5",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
-						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isDemoMode ? "Demo režim s ukázkovými daty" : "Živá data The Odds API" }),
-							!isDemoMode && lastUpdatedAt && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								"aria-hidden": "true",
-								children: "·"
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "font-mono tabular-nums text-emerald-300",
-								children: formatUpdateTimeLabel(lastUpdatedAt)
-							})] }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								"aria-hidden": "true",
-								children: "·"
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Porovnání Betano, Tipsport a průměru trhu" })
-						]
-					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
-						className: "font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl text-balance",
-						children: "Vyhledávač hodnotných sázek"
-					})]
-				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "flex flex-wrap items-center gap-3",
+					className: "min-w-0 font-mono text-xs tabular-nums text-slate-300",
 					children: [
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: onOpenCustomMatchModal,
-							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Vlastní zápas (Ping-pong / ostatní)" })]
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+							className: "font-semibold text-emerald-300",
+							children: isDemoMode ? "Demo režim" : compactTimeLabel ?? "Živá data"
 						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)(PWAInstallButton, { variant: "compact" }),
-						!isDemoMode ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: onRefreshLive,
-							disabled: isLoadingLive,
-							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `h-4 w-4 text-emerald-400 ${isLoadingLive ? "animate-spin" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingLive ? "Stahuji kurzy..." : "Aktualizovat kurzy z API" })]
-						}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: onOpenSettings,
-							className: "inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-700/90 bg-slate-900/90 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100 whitespace-nowrap shrink-0",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Připojit API klíče" })]
-						})
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+							className: "mx-1.5 text-slate-600",
+							"aria-hidden": "true",
+							children: "·"
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", {
+								className: "text-slate-100",
+								children: summaryStats.valueCount
+							}),
+							" Value Betů z",
+							" ",
+							summaryStats.totalMatches
+						] })
 					]
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-center gap-2 shrink-0",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: isDemoMode ? onOpenSettings : onRefreshLive,
+						disabled: !isDemoMode && isLoadingLive,
+						"aria-label": isDemoMode ? "Připojit API klíče" : "Aktualizovat kurzy z API",
+						title: isDemoMode ? "Připojit API klíče v Nastavení" : "Aktualizovat kurzy z API",
+						className: "inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] text-emerald-400 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50",
+						children: isDemoMode ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `h-4 w-4 ${isLoadingLive ? "animate-spin" : ""}` })
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: onOpenCustomMatchModal,
+						className: "inline-flex min-h-[40px] items-center justify-center rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap",
+						children: "+ Vlastní zápas"
+					})]
 				})]
 			}),
 			liveError && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				role: "alert",
-				className: "flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200 sm:flex-row sm:items-center sm:justify-between",
+				className: "flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-200 sm:flex-row sm:items-center sm:justify-between",
 				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: liveError }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 					type: "button",
 					onClick: onOpenSettings,
-					className: "text-xs font-semibold text-amber-300 underline hover:text-amber-100 whitespace-nowrap self-start sm:self-auto",
+					className: "font-semibold text-amber-300 underline hover:text-amber-100 whitespace-nowrap self-start sm:self-auto",
 					children: "Zkontrolovat nastavení API"
 				})]
 			}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-				className: "grid grid-cols-1 gap-3 sm:grid-cols-3",
-				children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "text-xs font-medium text-slate-400",
-							children: "Nalezené Value Bety"
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-							className: "mt-1 font-mono text-2xl font-bold tabular-nums text-emerald-400",
-							children: [
-								summaryStats.valueCount,
-								" ",
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-									className: "text-sm font-normal text-slate-400",
-									children: [
-										"z ",
-										summaryStats.totalMatches,
-										" zápasů"
-									]
-								})
-							]
-						})]
-					}),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "text-xs font-medium text-slate-400",
-							children: "Nejvyšší dnešní Value skóre"
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "mt-1 font-mono text-2xl font-bold tabular-nums text-slate-100",
-							children: formatPercent(summaryStats.maxVal, true)
-						})]
-					}),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "rounded-2xl border border-slate-800/90 bg-[#111827] px-5 py-4",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "text-xs font-medium text-slate-400",
-							children: "Průměrná matematická výhoda (+EV)"
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "mt-1 font-mono text-2xl font-bold tabular-nums text-slate-100",
-							children: formatPercent(summaryStats.avgVal, true)
-						})]
-					})
-				]
-			}),
-			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-				className: "space-y-3 rounded-2xl border border-slate-800/90 bg-[#111827] p-4",
+				className: "space-y-2.5 rounded-2xl border border-slate-800/90 bg-[#111827] p-3.5 sm:p-4",
 				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between",
+					className: "flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between",
 					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-						className: "flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0",
+						className: "flex items-center gap-1.5 overflow-x-auto pb-0.5 lg:pb-0",
 						role: "tablist",
 						"aria-label": "Filtr sportů",
 						children: SPORT_FILTERS.map((sport) => {
@@ -14546,7 +14655,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 								role: "tab",
 								"aria-selected": active,
 								onClick: () => setSportFilter(sport),
-								className: `min-h-[40px] rounded-xl px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${active ? "bg-emerald-500 text-slate-950 font-semibold" : "bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-slate-100"}`,
+								className: `min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${active ? "bg-emerald-500 text-slate-950 font-semibold" : "bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-slate-100"}`,
 								children: sport
 							}, sport);
 						})
@@ -14561,124 +14670,80 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 								role: "tab",
 								"aria-selected": active,
 								onClick: () => setTimeWindow(win),
-								className: `min-h-[36px] rounded-lg px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${active ? "bg-slate-800 text-slate-50 shadow-sm" : "text-slate-400 hover:text-slate-200"}`,
+								className: `min-h-[34px] rounded-lg px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${active ? "bg-slate-800 text-slate-50 shadow-sm" : "text-slate-400 hover:text-slate-200"}`,
 								children: win === "Vše" ? "Všechny dny" : win
 							}, win);
 						})
 					})]
 				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "flex flex-col gap-3 border-t border-slate-800/80 pt-3 sm:flex-row sm:items-center sm:justify-between",
+					className: "flex flex-col gap-2.5 border-t border-slate-800/80 pt-2.5 sm:flex-row sm:items-center sm:justify-between",
 					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "relative flex-1 max-w-md",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Search, { className: "pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+						className: "relative flex-1 sm:max-w-sm",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Search, { className: "pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
 							type: "search",
 							value: searchQuery,
 							onChange: (e) => setSearchQuery(e.target.value),
 							placeholder: "Hledat tým, hráče nebo ligu...",
-							className: "min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] pl-10 pr-4 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+							className: "min-h-[40px] w-full rounded-xl border border-slate-800 bg-[#090D16] pl-9 pr-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
 						})]
 					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "flex flex-wrap items-center gap-2.5",
+						className: "flex flex-wrap items-center gap-2",
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 							type: "button",
+							"aria-pressed": onlyValueBets,
 							onClick: () => setOnlyValueBets((v) => !v),
-							className: `inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${onlyValueBets ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700"}`,
+							className: `inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${onlyValueBets ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700"}`,
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TrendingUp, { className: "h-3.5 w-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Jen pozitivní Value (+EV)" })]
 						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							ref: sortContainerRef,
-							className: "relative",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-								type: "button",
-								"aria-haspopup": "listbox",
-								"aria-expanded": isSortMenuOpen,
-								onClick: () => setIsSortMenuOpen((open) => !open),
-								className: `inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${isSortMenuOpen ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100"}`,
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowUpDown, { className: "h-3.5 w-3.5 text-emerald-400" }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Řazeno: ", activeSortOption.label] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: `h-3.5 w-3.5 text-slate-400 transition-transform ${isSortMenuOpen ? "rotate-180" : ""}` })
-								]
-							}), isSortMenuOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "fixed inset-0 z-40 bg-black/60 backdrop-blur-xs sm:hidden",
-								onClick: () => setIsSortMenuOpen(false),
-								"aria-hidden": "true"
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								role: "listbox",
-								"aria-label": "Způsob řazení zápasů",
-								className: "fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-slate-800 bg-[#111827] p-4 pb-6 shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 sm:rounded-2xl sm:border sm:p-2",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "mb-3 flex items-center justify-between border-b border-slate-800/80 pb-2.5 sm:hidden",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "font-display text-sm font-bold text-slate-100",
-										children: "Seřadit zápasy podle"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-										type: "button",
-										onClick: () => setIsSortMenuOpen(false),
-										"aria-label": "Zavřít nabídku řazení",
-										className: "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-100",
-										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "h-4 w-4" })
-									})]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-									className: "space-y-1",
-									children: SORT_OPTIONS.map((option) => {
-										const active = sortMode === option.id;
-										return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-											type: "button",
-											role: "option",
-											"aria-selected": active,
-											onClick: () => {
-												setSortMode(option.id);
-												setIsSortMenuOpen(false);
-											},
-											className: `flex w-full items-start justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${active ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200" : "border-transparent bg-transparent text-slate-300 hover:border-slate-800 hover:bg-[#090D16]"}`,
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "min-w-0",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-													className: `block text-xs font-semibold ${active ? "text-emerald-300" : "text-slate-100"}`,
-													children: option.label
-												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-													className: "mt-0.5 block text-[11px] leading-snug text-slate-400",
-													children: option.description
-												})]
-											}), active && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-400" })]
-										}, option.id);
-									})
-								})]
-							})] })]
+							className: "relative flex-1 sm:flex-initial",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowUpDown, { className: "pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-400" }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("select", {
+									"aria-label": "Seřadit zápasy podle",
+									value: sortMode,
+									onChange: (e) => setSortMode(e.target.value),
+									className: "min-h-[40px] w-full appearance-none rounded-xl border border-slate-800 bg-[#090D16] pl-8 pr-8 text-xs font-medium text-slate-200 transition-colors hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none",
+									children: SORT_OPTIONS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", {
+										value: option.id,
+										children: option.label
+									}, option.id))
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" })
+							]
 						})]
 					})]
 				})]
 			}),
 			isLoadingLive ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "grid grid-cols-1 gap-4 xl:grid-cols-2",
+				className: "grid grid-cols-1 gap-3 xl:grid-cols-2",
 				children: [
 					1,
 					2,
 					3,
 					4
-				].map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-72 animate-pulse rounded-2xl border border-slate-800/80 bg-[#111827] p-5" }, n))
+				].map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-48 animate-pulse rounded-2xl border border-slate-800/80 bg-[#111827] p-4" }, n))
 			}) : filteredMatches.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center",
+				className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-7 text-center",
 				children: [
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "font-display text-lg font-semibold text-slate-200",
+						className: "font-display text-base font-semibold text-slate-200 sm:text-lg",
 						children: matches.length === 0 && !isDemoMode ? "Živé zápasy z API se nepodařilo načíst" : "Pro vybrané filtry nebyly nalezeny žádné zápasy"
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-						className: "mt-1.5 text-sm text-slate-400",
+						className: "mt-1 text-xs text-slate-400 sm:text-sm",
 						children: matches.length === 0 && !isDemoMode ? "Demo režim je vypnutý. Zkontrolujte chybu výše, upravte API klíč v Nastavení nebo zkuste kurzy načíst znovu." : "Zkuste přepnout časové okno na Všechny dny nebo zrušit filtr pozitivního Value."
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-						className: "mt-5 flex flex-wrap justify-center gap-3",
+						className: "mt-4 flex flex-wrap justify-center gap-2.5",
 						children: matches.length === 0 && !isDemoMode ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: onRefreshLive,
-							className: "min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400",
+							className: "min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400",
 							children: "Zkusit načíst znovu"
 						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: onOpenSettings,
-							className: "min-h-[44px] rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800",
+							className: "min-h-[42px] rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800",
 							children: "Otevřít Nastavení"
 						})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
@@ -14688,23 +14753,23 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 								setSportFilter("Vše");
 								setSearchQuery("");
 							},
-							className: "min-h-[44px] rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400",
+							className: "min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400",
 							children: "Zobrazit všechny zápasy"
 						})
 					})
 				]
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "grid grid-cols-1 gap-4 xl:grid-cols-2",
+				className: "grid grid-cols-1 gap-3 xl:grid-cols-2",
 				children: filteredMatches.map((match) => {
-					const isPositiveValue = match.valueScore > 0;
+					const isPositiveValue = isMatchPositiveValue(match);
 					const isSelected = selectedMatchIds.includes(match.id);
 					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-						className: `flex flex-col justify-between rounded-2xl border bg-[#111827] p-5 transition-colors ${isPositiveValue ? "border-emerald-500/40 hover:border-emerald-500/60" : "border-slate-800/90 hover:border-slate-700"}`,
+						className: `flex flex-col justify-between rounded-2xl border bg-[#111827] p-4 transition-colors ${isPositiveValue ? "border-emerald-500/40 hover:border-emerald-500/60" : "border-slate-800/90 hover:border-slate-700"}`,
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "flex flex-wrap items-center justify-between gap-2 text-xs",
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex flex-wrap items-center gap-2 text-slate-400",
+									className: "flex flex-wrap items-center gap-1.5 text-slate-400",
 									children: [
 										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "font-medium text-slate-300",
@@ -14722,18 +14787,11 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "font-mono tabular-nums",
 											children: match.kickoffTime
-										}),
-										match.isCustom && typeof match.bookmakerMarginPct === "number" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											"aria-hidden": "true",
-											children: "·"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-											className: "font-mono tabular-nums text-sky-300",
-											children: ["Marže ", formatPercent(match.bookmakerMarginPct)]
-										})] })
+										})
 									]
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-center gap-2.5",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center gap-2",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 										className: `font-mono text-xs font-bold tabular-nums ${isPositiveValue ? "text-emerald-400" : "text-slate-400"}`,
 										children: [isPositiveValue ? "Value Bet " : match.isCustom && match.valueScore === 0 ? "Vlastní · Value " : "Bez výhody ", formatPercent(match.valueScore, true)]
 									}), match.isCustom && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
@@ -14741,15 +14799,15 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 										onClick: () => onDeleteCustomMatch(match.id),
 										title: "Smazat vlastní zápas",
 										"aria-label": `Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`,
-										className: "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
+										className: "inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
 										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" })
 									})]
 								})]
 							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "mt-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between",
-								children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", {
-									className: "font-display text-lg font-bold tracking-tight text-slate-50",
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", {
+									className: "font-display text-base font-bold tracking-tight text-slate-50 sm:text-lg",
 									children: [
 										match.homeTeam,
 										" ",
@@ -14761,7 +14819,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 										match.awayTeam
 									]
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-									className: "mt-1 text-sm text-slate-300",
+									className: "mt-0.5 text-xs text-slate-300 sm:text-sm",
 									children: [
 										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 											className: "text-slate-400",
@@ -14773,116 +14831,57 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 											children: match.recommendedPick
 										})
 									]
-								})] })
+								})]
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-4 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2.5",
+								className: "mt-3 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2",
 								children: [
 									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "px-3 text-center",
+										className: "px-2.5 text-center",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "block text-[11px] text-slate-400",
-											children: "Betano"
+											children: "Kurz Betano"
 										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: `mt-0.5 block font-mono text-base font-bold tabular-nums ${match.odds.betano >= match.odds.tipsport && match.odds.betano > match.odds.marketAvg ? "text-emerald-400" : "text-slate-100"}`,
+											className: `mt-0.5 block font-mono text-sm font-bold tabular-nums sm:text-base ${match.odds.betano > match.odds.marketAvg ? "text-emerald-400" : "text-slate-100"}`,
 											children: formatOdds(match.odds.betano)
 										})]
 									}),
 									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "px-3 text-center",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Tipsport"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-0.5 block font-mono text-base font-semibold tabular-nums text-slate-200",
-											children: formatOdds(match.odds.tipsport)
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "px-3 text-center",
+										className: "px-2.5 text-center",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: "block text-[11px] text-slate-400",
 											children: "Průměr trhu"
 										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-0.5 block font-mono text-base font-medium tabular-nums text-slate-400",
+											className: "mt-0.5 block font-mono text-sm font-semibold tabular-nums text-slate-300 sm:text-base",
 											children: formatOdds(match.odds.marketAvg)
+										})]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "px-2.5 text-center",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "block text-[11px] text-slate-400",
+											children: "Šance na výhru"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100 sm:text-base",
+											children: formatPercent(match.aiProbability)
 										})]
 									})
 								]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-4 space-y-2",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-center justify-between text-xs",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-										className: "text-slate-400",
-										children: [
-											"AI pravděpodobnost:",
-											" ",
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", {
-												className: "font-mono tabular-nums text-slate-100",
-												children: formatPercent(match.aiProbability)
-											})
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-										className: "text-slate-400",
-										children: [
-											"Implikováno kurzem:",
-											" ",
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "font-mono tabular-nums text-slate-300",
-												children: formatPercent(match.impliedProbability)
-											})
-										]
-									})]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-									className: "relative h-2 w-full overflow-hidden rounded-full bg-slate-800",
-									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-										className: `h-full rounded-full transition-all duration-300 ${isPositiveValue ? "bg-emerald-500" : "bg-slate-500"}`,
-										style: { width: `${Math.min(100, match.aiProbability)}%` }
-									})
-								})]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-4 grid grid-cols-1 gap-2 border-t border-slate-800/70 pt-3 sm:grid-cols-2 sm:gap-4",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "space-y-1.5",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(FormSequence, {
-										label: match.homeTeam,
-										form: match.formHome
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(FormSequence, {
-										label: match.awayTeam,
-										form: match.formAway
-									})]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex flex-col justify-center text-xs sm:border-l sm:border-slate-800/70 sm:pl-4",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "text-slate-400",
-										children: "Vzájemná bilance (H2H)"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "mt-0.5 font-medium text-slate-200",
-										children: match.h2hSummary
-									})]
-								})]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-								className: "mt-3 text-xs leading-relaxed text-slate-300",
-								children: match.reasoning
 							})
 						] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "mt-4 flex flex-col gap-2.5 border-t border-slate-800/70 pt-4 sm:flex-row sm:items-center",
+							className: "mt-3 flex flex-row items-center gap-2 border-t border-slate-800/70 pt-3",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 								type: "button",
 								onClick: () => onToggleMatchOnSlip(match),
-								className: `inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap ${isSelected ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
-								children: isSelected ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Na tiketu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Přidat na tiket" })] })
+								className: `inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:text-sm ${isSelected ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
+								children: isSelected ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Na tiketu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Přidat na tiket" })
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
 								href: BETANO_HOME_URL,
 								target: "_blank",
 								rel: "noopener noreferrer",
 								onClick: () => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick),
-								className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Najít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-4 w-4 shrink-0 text-slate-400" })]
+								className: "inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:text-sm",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 shrink-0 text-slate-400" })]
 							})]
 						})]
 					}, match.id);
@@ -15057,58 +15056,58 @@ var ALL_SPORTS = [
 	"Šipky",
 	"Ostatní"
 ];
-var BUDGET_PRESETS = [
-	5,
-	50,
-	200,
-	1e3,
-	5e3
+var LEG_COUNT_OPTIONS = [
+	{
+		value: null,
+		label: "Auto"
+	},
+	{
+		value: 1,
+		label: "1"
+	},
+	{
+		value: 2,
+		label: "2"
+	},
+	{
+		value: 3,
+		label: "3"
+	},
+	{
+		value: 4,
+		label: "4"
+	}
 ];
 var TICKET_MODES = [
 	{
 		id: "safe",
+		shortTitle: "Jistota",
 		title: "Jistota (Konzervativní)",
-		legsLabel: "1–2 zápasy",
-		stakeHint: "Vklad cca 10 % (min. 10 Kč)",
-		description: "Vybere 1 až 2 zápasy s nejvyšší pravděpodobností výhry a nejnižším rizikem prohry.",
+		summary: "1–2 nejbezpečnější zápasy · doporučený vklad cca 10 % (min. 10 Kč)",
 		riskLabel: "Konzervativní",
 		icon: ShieldCheck
 	},
 	{
 		id: "smart_value",
+		shortTitle: "Vyvážený",
 		title: "Vyvážený (Smart Value)",
-		legsLabel: "2–3 zápasy",
-		stakeHint: "Vklad cca 7 % (min. 10 Kč)",
-		description: "Kombinuje dobrou pravděpodobnost nad zvolený limit s kladnou hodnotou kurzu (+EV).",
+		summary: "2–3 zápasy s dobrou šancí a +EV · vklad cca 7 % (min. 10 Kč)",
 		riskLabel: "Vyvážený",
 		icon: TrendingUp
 	},
 	{
 		id: "bold",
+		shortTitle: "Odvážný",
 		title: "Odvážný (Vyšší kurz)",
-		legsLabel: "3–4 zápasy",
-		stakeHint: "Vklad cca 5 % (min. 5 Kč)",
-		description: "Vybere 3 až 4 zápasy s nejvyšším celkovým kurzem a nejvyšší odchylkou Value %.",
+		summary: "3–4 zápasy s nejvyšším kurzem a Value % · vklad cca 5 % (min. 5 Kč)",
 		riskLabel: "Odvážný",
 		icon: Flame
 	}
 ];
-var RISK_BADGE_STYLES = {
-	Nízké: {
-		container: "border-emerald-500/40 bg-emerald-500/10",
-		text: "text-emerald-300",
-		dot: "bg-emerald-400"
-	},
-	Střední: {
-		container: "border-amber-500/40 bg-amber-500/10",
-		text: "text-amber-300",
-		dot: "bg-amber-400"
-	},
-	Vyšší: {
-		container: "border-rose-500/40 bg-rose-500/10",
-		text: "text-rose-300",
-		dot: "bg-rose-400"
-	}
+var RISK_TEXT_STYLES = {
+	Nízké: "font-semibold text-emerald-300",
+	Střední: "font-semibold text-amber-300",
+	Vyšší: "font-semibold text-rose-300"
 };
 function renderFormattedGeminiReasoning(text) {
 	const paragraphs = text.replace(/\*\*/g, "").split(/\n+/).map((p) => p.trim()).filter(Boolean);
@@ -15141,40 +15140,75 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 		return 55;
 	}, [matches]);
 	const matchesSignature = (0, import_react.useMemo)(() => matches.map((m) => `${m.id}:${m.aiProbability}:${m.valueScore}`).join("|"), [matches]);
-	const [budget, setBudget] = (0, import_react.useState)(Math.max(5, Math.round(currentBankroll)));
+	const [budgetInput, setBudgetInput] = (0, import_react.useState)(() => String(Math.max(5, Math.round(currentBankroll))));
 	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
+	const [exactLegsCount, setExactLegsCount] = (0, import_react.useState)(null);
 	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
 	const [selectedSports, setSelectedSports] = (0, import_react.useState)(ALL_SPORTS);
+	const [showOtherSports, setShowOtherSports] = (0, import_react.useState)(false);
+	const [filtersCollapsed, setFiltersCollapsed] = (0, import_react.useState)(false);
 	const [variationIndex, setVariationIndex] = (0, import_react.useState)(0);
-	const [customStake, setCustomStake] = (0, import_react.useState)(5);
+	const [customStakeInput, setCustomStakeInput] = (0, import_react.useState)("5");
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
 	const [aiReasons, setAiReasons] = (0, import_react.useState)(() => loadCachedMatchReasons());
 	const [aiModels, setAiModels] = (0, import_react.useState)({});
 	const [statFallbackReasons, setStatFallbackReasons] = (0, import_react.useState)({});
+	const [expandedMatchIds, setExpandedMatchIds] = (0, import_react.useState)({});
 	const [loadingMatchIds, setLoadingMatchIds] = (0, import_react.useState)({});
 	(0, import_react.useEffect)(() => {
 		setMinMatchProbability(recommendedMinProb);
 		setVariationIndex(0);
 		setSavedFeedback(false);
 	}, [matchesSignature, recommendedMinProb]);
-	const safeBudget = Math.max(5, Math.round(budget || 5));
-	const generated = (0, import_react.useMemo)(() => generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, { minMatchProbability }), [
+	const trimmedGeminiKey = geminiApiKey.trim();
+	(0, import_react.useEffect)(() => {
+		setStatFallbackReasons({});
+	}, [trimmedGeminiKey]);
+	const safeBudget = parseAmountInput(budgetInput, currentBankroll, 5);
+	const generated = (0, import_react.useMemo)(() => generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
+		minMatchProbability,
+		exactLegsCount
+	}), [
 		matches,
 		selectedSports,
 		ticketStyle,
 		safeBudget,
 		variationIndex,
-		minMatchProbability
+		minMatchProbability,
+		exactLegsCount
 	]);
 	(0, import_react.useEffect)(() => {
-		if (generated) setCustomStake(generated.recommendedStake);
+		if (generated) setCustomStakeInput(String(generated.recommendedStake));
 	}, [generated]);
-	const trimmedGeminiKey = geminiApiKey.trim();
-	(0, import_react.useEffect)(() => {
-		setStatFallbackReasons({});
-	}, [trimmedGeminiKey]);
-	const handleFetchSingleAnalysis = async (leg) => {
+	const { primarySports, otherSports, sportCounts } = (0, import_react.useMemo)(() => {
+		const counts = /* @__PURE__ */ new Map();
+		for (const s of ALL_SPORTS) counts.set(s, {
+			totalNonNeg: 0,
+			eligible: 0
+		});
+		for (const m of matches) {
+			if (m.valueScore < 0) continue;
+			const entry = counts.get(m.sport);
+			if (!entry) continue;
+			entry.totalNonNeg += 1;
+			if (m.aiProbability >= minMatchProbability) entry.eligible += 1;
+		}
+		const withMatches = ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0);
+		return {
+			primarySports: withMatches.length > 0 ? withMatches : ALL_SPORTS,
+			otherSports: withMatches.length > 0 ? ALL_SPORTS.filter((s) => !withMatches.includes(s)) : [],
+			sportCounts: counts
+		};
+	}, [matches, minMatchProbability]);
+	const handleOpenOrFetchAnalysis = async (leg) => {
 		if (loadingMatchIds[leg.matchId]) return;
+		if (aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text) {
+			setExpandedMatchIds((prev) => ({
+				...prev,
+				[leg.matchId]: true
+			}));
+			return;
+		}
 		setLoadingMatchIds((prev) => ({
 			...prev,
 			[leg.matchId]: true
@@ -15201,6 +15235,10 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 					apiStatus: result.apiStatus
 				}
 			}));
+			setExpandedMatchIds((prev) => ({
+				...prev,
+				[leg.matchId]: true
+			}));
 		} finally {
 			setLoadingMatchIds((prev) => {
 				const next = { ...prev };
@@ -15208,6 +15246,12 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 				return next;
 			});
 		}
+	};
+	const handleCollapseAnalysis = (matchId) => {
+		setExpandedMatchIds((prev) => ({
+			...prev,
+			[matchId]: false
+		}));
 	};
 	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length, [
 		matches,
@@ -15231,21 +15275,27 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 		setVariationIndex(0);
 		setSavedFeedback(false);
 	};
-	const handleGenerateClick = () => {
-		const normalizedBudget = Math.max(5, Math.round(budget || 5));
-		setBudget(normalizedBudget);
+	const handleSelectLegsCount = (count) => {
+		setExactLegsCount(count);
 		setVariationIndex(0);
 		setSavedFeedback(false);
-		const fresh = generateOptimalTicket(matches, selectedSports, ticketStyle, normalizedBudget, 0, { minMatchProbability });
-		if (fresh) setCustomStake(fresh.recommendedStake);
+	};
+	const handlePrevVariation = () => {
+		if (!generated || generated.availableCombosCount <= 1) return;
+		const count = generated.availableCombosCount;
+		setVariationIndex((prev) => (prev - 1 + count) % count);
+		setSavedFeedback(false);
 	};
 	const handleNextVariation = () => {
-		setVariationIndex((prev) => prev + 1);
+		if (!generated || generated.availableCombosCount <= 1) return;
+		const count = generated.availableCombosCount;
+		setVariationIndex((prev) => (prev + 1) % count);
 		setSavedFeedback(false);
 	};
 	const handleSave = () => {
 		if (!generated) return;
-		const stake = Math.max(5, Math.round(customStake || generated.recommendedStake));
+		const stake = parseAmountInput(customStakeInput, generated.recommendedStake, 5);
+		setCustomStakeInput(String(stake));
 		const activeMode = TICKET_MODES.find((m) => m.id === generated.style) ?? TICKET_MODES[0];
 		onSaveTicket({
 			id: `tkt-${Date.now()}`,
@@ -15268,218 +15318,267 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 		setSavedFeedback(true);
 	};
 	const activeMode = TICKET_MODES.find((m) => m.id === ticketStyle) ?? TICKET_MODES[0];
-	const activeStake = Math.max(5, Math.round(customStake || (generated?.recommendedStake ?? 5)));
-	const calculatedWin = generated ? Math.round(activeStake * generated.totalOdds) : 0;
-	const isLowProbCapped = ticketStyle === "smart_value" && minMatchProbability < 45;
-	const riskBadgeStyle = generated ? RISK_BADGE_STYLES[generated.estimatedRisk] : null;
+	const parsedCustomStake = Number(customStakeInput);
+	const calculatedWin = generated ? Math.round((customStakeInput === "" || !Number.isFinite(parsedCustomStake) ? 0 : Math.round(parsedCustomStake)) * generated.totalOdds) : 0;
+	const isLowProbCapped = exactLegsCount === null && ticketStyle === "smart_value" && minMatchProbability < 45;
+	const riskTextClass = generated ? RISK_TEXT_STYLES[generated.estimatedRisk] : "";
 	const customMatches = (0, import_react.useMemo)(() => matches.filter((m) => m.isCustom), [matches]);
 	const comboIndexLabel = generated && generated.availableCombosCount > 1 ? ` (${variationIndex % generated.availableCombosCount + 1}/${generated.availableCombosCount})` : "";
+	const legsSummaryLabel = exactLegsCount === null ? "Auto" : exactLegsCount === 1 ? "1 zápas" : `${exactLegsCount} zápasy`;
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-		className: "space-y-6",
-		children: [
-			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-					className: "text-xs text-slate-400",
-					children: "Optimalizace tiketu pro minimální riziko prohry a matematickou výhodu (Value Bet)"
-				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
-					className: "mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl",
-					children: "Generátor optimálního tiketu"
-				})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+		className: "space-y-4 sm:space-y-5",
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "flex flex-col gap-2.5 sm:flex-row sm:items-end sm:justify-between",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+				className: "font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl",
+				children: "Generátor tiketu"
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+				className: "mt-0.5 text-xs text-slate-400",
+				children: "Živý automatický přepočet strategie, počtu zápasů a Value filtrů"
+			})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+				type: "button",
+				onClick: onOpenCustomMatchModal,
+				className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 whitespace-nowrap shrink-0 self-start sm:self-auto",
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Vlastní zápas" })]
+			})]
+		}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: filtersCollapsed ? "grid grid-cols-1 gap-4" : "grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start lg:gap-5",
+			children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+				"aria-label": "Nastavení tiketu a filtrů",
+				className: `rounded-2xl border border-slate-800/90 bg-[#111827] ${filtersCollapsed ? "px-4 py-2.5" : "space-y-4 p-4 sm:p-5 lg:col-span-5"}`,
+				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 					type: "button",
-					onClick: onOpenCustomMatchModal,
-					className: "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap shrink-0 self-start sm:self-auto",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CirclePlus, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Vlastní zápas (Ping-pong / ostatní)" })]
-				})]
-			}),
-			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", {
-				"aria-label": "Výběr stylu tiketu",
-				className: "grid grid-cols-1 gap-3 md:grid-cols-3",
-				children: TICKET_MODES.map((mode) => {
-					const Icon = mode.icon;
-					const active = ticketStyle === mode.id;
-					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-						type: "button",
-						onClick: () => handleSelectStyle(mode.id),
-						"aria-pressed": active,
-						className: `flex flex-col justify-between rounded-2xl border p-4 text-left transition-colors ${active ? "border-emerald-500/70 bg-emerald-500/12 shadow-lg shadow-emerald-950/20" : "border-slate-800/90 bg-[#111827] hover:border-slate-700"}`,
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex items-center justify-between gap-2",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-								className: `inline-flex items-center gap-2 font-display text-sm font-bold ${active ? "text-emerald-300" : "text-slate-100"}`,
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: mode.title })]
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "font-mono text-[11px] font-semibold tabular-nums text-slate-300",
-								children: mode.legsLabel
-							})]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-							className: "mt-2 text-xs leading-relaxed text-slate-400",
-							children: mode.description
-						})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px]",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "font-mono font-medium tabular-nums text-slate-300",
-								children: mode.stakeHint
-							}), active && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "font-semibold text-emerald-400",
-								children: "Aktivní režim"
-							})]
+					onClick: () => setFiltersCollapsed((prev) => !prev),
+					"aria-expanded": !filtersCollapsed,
+					className: "flex min-h-[40px] w-full items-center justify-between gap-3 text-left",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex min-w-0 items-center gap-2",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+							className: "truncate font-mono text-xs font-semibold tabular-nums text-slate-200",
+							children: [
+								"Filtry: ",
+								activeMode.shortTitle,
+								" · ",
+								legsSummaryLabel,
+								" · Min. ",
+								minMatchProbability,
+								" %"
+							]
 						})]
-					}, mode.id);
-				})
-			}),
-			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-					className: "space-y-5 rounded-2xl border border-slate-800/90 bg-[#111827] p-5 lg:col-span-5",
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+						className: "inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-800 bg-[#090D16] px-2.5 py-1 text-[11px] font-medium text-slate-300",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: filtersCollapsed ? "Rozbalit" : "Sbalit" }), filtersCollapsed ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "h-3.5 w-3.5" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "h-3.5 w-3.5" })]
+					})]
+				}), !filtersCollapsed && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "space-y-4 border-t border-slate-800/80 pt-3.5",
 					children: [
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex items-center justify-between gap-2",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-									htmlFor: "min-prob-slider",
-									className: "inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-4 w-4 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Minimální pravděpodobnost zápasu" })]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-									className: "rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-sm font-bold tabular-nums text-emerald-300",
-									children: [minMatchProbability, " %"]
-								})]
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "block text-xs font-semibold text-slate-300",
+								children: "Strategie tiketu"
 							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-								id: "min-prob-slider",
-								type: "range",
-								min: 25,
-								max: 85,
-								step: 1,
-								value: minMatchProbability,
-								onChange: (e) => {
-									setMinMatchProbability(Number(e.target.value));
-									setVariationIndex(0);
-									setSavedFeedback(false);
-								},
-								className: "mt-3 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "25 %" }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: minMatchProbability < 45 ? "text-amber-400" : "",
-										children: "45 %"
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								role: "group",
+								"aria-label": "Výběr strategie tiketu",
+								className: "mt-1.5 grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1",
+								children: TICKET_MODES.map((mode) => {
+									const Icon = mode.icon;
+									const active = ticketStyle === mode.id;
+									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 										type: "button",
-										onClick: () => {
-											setMinMatchProbability(recommendedMinProb);
-											setVariationIndex(0);
-											setSavedFeedback(false);
-										},
-										className: `transition-colors hover:text-emerald-300 ${minMatchProbability === recommendedMinProb ? "text-emerald-400 font-semibold" : "text-slate-400"}`,
-										children: [
-											"Auto: ",
-											recommendedMinProb,
-											" % (min. 3 zápasy)"
-										]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "85 %" })
-								]
+										onClick: () => handleSelectStyle(mode.id),
+										"aria-pressed": active,
+										className: `inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${active ? "bg-emerald-500 text-slate-950 shadow-sm" : "text-slate-300 hover:bg-slate-800/60 hover:text-slate-100"}`,
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: mode.shortTitle })]
+									}, mode.id);
+								})
 							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-2.5 flex items-center justify-between text-xs text-slate-400",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zápasy splňující limit (Value ≥ 0,0 %):" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-									className: `font-mono font-semibold tabular-nums ${eligibleMatchesCount > 0 ? "text-emerald-300" : "text-rose-400"}`,
-									children: [
-										eligibleMatchesCount,
-										" z ",
-										nonNegativeSportMatchesCount
-									]
-								})]
-							}),
-							isLowProbCapped && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-2.5 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-200",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TriangleAlert, { className: "mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Limit je pod 45 %: režim Vyvážený automaticky omezuje počet zápasů na max. 1–2 (sólo/double)." })]
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "mt-1.5 text-[11px] leading-snug text-slate-400",
+								children: activeMode.summary
 							})
 						] }),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "border-t border-slate-800/80 pt-5",
+							className: "border-t border-slate-800/80 pt-3.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "text-xs font-semibold text-slate-300",
+									children: "Počet zápasů na tiket"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "font-mono text-[11px] tabular-nums text-slate-400",
+									children: exactLegsCount === null ? "Dle strategie" : `Přesně ${exactLegsCount}`
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								role: "group",
+								"aria-label": "Počet zápasů na tiket",
+								className: "mt-1.5 grid grid-cols-5 gap-1.5",
+								children: LEG_COUNT_OPTIONS.map((opt) => {
+									const active = exactLegsCount === opt.value;
+									return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => handleSelectLegsCount(opt.value),
+										"aria-pressed": active,
+										className: `inline-flex min-h-[44px] items-center justify-center rounded-xl border font-mono text-xs font-semibold tabular-nums transition-colors whitespace-nowrap ${active ? "border-emerald-500/70 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100"}`,
+										children: opt.label
+									}, opt.label);
+								})
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "border-t border-slate-800/80 pt-3.5",
 							children: [
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-center justify-between",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
-										htmlFor: "generator-budget",
-										className: "text-sm font-semibold text-slate-100",
-										children: "Váš rozpočet (Kč)"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "button",
-										onClick: () => {
-											setBudget(Math.max(5, Math.round(currentBankroll)));
-											setSavedFeedback(false);
-										},
-										className: "text-xs font-medium text-emerald-400 hover:text-emerald-300",
-										children: [
-											"Použít bankroll (",
-											formatCZK(currentBankroll),
-											")"
-										]
+									className: "flex items-center justify-between gap-2",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+										htmlFor: "min-prob-slider",
+										className: "inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersHorizontal, { className: "h-3.5 w-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Minimální pravděpodobnost (%)" })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "font-mono text-sm font-bold tabular-nums text-emerald-300",
+										children: [minMatchProbability, " %"]
 									})]
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-									id: "generator-budget",
-									type: "number",
-									min: 5,
-									step: 5,
-									value: budget,
+									id: "min-prob-slider",
+									type: "range",
+									min: 25,
+									max: 85,
+									step: 1,
+									value: minMatchProbability,
 									onChange: (e) => {
-										setBudget(Number(e.target.value));
+										setMinMatchProbability(Number(e.target.value));
+										setVariationIndex(0);
 										setSavedFeedback(false);
 									},
-									onBlur: () => setBudget((b) => Math.max(5, Math.round(b || 5))),
-									className: "mt-2 min-h-[46px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-lg font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+									className: "mt-2.5 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
 								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-									className: "mt-2 flex flex-wrap gap-1.5",
-									children: BUDGET_PRESETS.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-										type: "button",
-										onClick: () => {
-											setBudget(preset);
-											setSavedFeedback(false);
-										},
-										className: `min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-xs tabular-nums transition-colors ${budget === preset ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200"}`,
-										children: formatCZK(preset)
-									}, preset))
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "25 %" }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											onClick: () => {
+												setMinMatchProbability(recommendedMinProb);
+												setVariationIndex(0);
+												setSavedFeedback(false);
+											},
+											className: `transition-colors hover:text-emerald-300 ${minMatchProbability === recommendedMinProb ? "font-semibold text-emerald-400" : "text-slate-400"}`,
+											children: [
+												"Auto ",
+												recommendedMinProb,
+												" %"
+											]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+											className: `font-semibold ${eligibleMatchesCount > 0 ? "text-slate-300" : "text-rose-400"}`,
+											children: [
+												eligibleMatchesCount,
+												"/",
+												nonNegativeSportMatchesCount,
+												" zápasů"
+											]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "85 %" })
+									]
+								}),
+								isLowProbCapped && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "mt-2 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-200",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TriangleAlert, { className: "mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Limit pod 45 %: režim Vyvážený v režimu Auto omezuje tiket na max. 1–2 zápasy." })]
 								})
 							]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "border-t border-slate-800/80 pt-5",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-								className: "block text-sm font-semibold text-slate-100",
-								children: "Zahrnuté sporty"
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "mt-2.5 grid grid-cols-2 gap-2",
-								children: ALL_SPORTS.map((sport) => {
+							className: "border-t border-slate-800/80 pt-3.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+									htmlFor: "generator-budget",
+									className: "text-xs font-semibold text-slate-300",
+									children: "Rozpočet (Kč)"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: "font-mono text-[11px] tabular-nums text-slate-400",
+									children: ["Bankroll: ", formatCZK(currentBankroll)]
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-1.5 flex items-center gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+									id: "generator-budget",
+									type: "text",
+									inputMode: "numeric",
+									placeholder: "0",
+									value: budgetInput,
+									onChange: (e) => {
+										setBudgetInput(sanitizeIntegerInput(e.target.value));
+										setSavedFeedback(false);
+									},
+									className: "min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									onClick: () => {
+										setBudgetInput(String(Math.max(5, Math.round(currentBankroll))));
+										setSavedFeedback(false);
+									},
+									className: "inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-500/50 hover:bg-slate-800/70 whitespace-nowrap",
+									children: "Použít bankroll"
+								})]
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "border-t border-slate-800/80 pt-3.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "text-xs font-semibold text-slate-300",
+									children: "Zahrnuté sporty"
+								}), otherSports.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => setShowOtherSports((v) => !v),
+									className: "inline-flex items-center gap-1 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+										"Další sporty (",
+										otherSports.length,
+										")"
+									] }), showOtherSports ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "h-3.5 w-3.5" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "h-3.5 w-3.5" })]
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-2 grid grid-cols-2 gap-1.5",
+								children: [primarySports.map((sport) => {
 									const active = selectedSports.includes(sport);
-									const count = matches.filter((m) => m.sport === sport && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length;
+									const count = sportCounts.get(sport)?.eligible ?? 0;
 									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 										type: "button",
 										onClick: () => toggleSport(sport),
-										className: `flex min-h-[44px] items-center justify-between rounded-xl border px-3.5 py-2 text-sm font-medium transition-colors ${active ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200" : "border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200"}`,
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: sport }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "font-mono text-xs tabular-nums opacity-75",
+										className: `flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${active ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200" : "border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200"}`,
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "truncate",
+											children: sport
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "font-mono text-[11px] tabular-nums opacity-80",
 											children: count
 										})]
 									}, sport);
-								})
+								}), showOtherSports && otherSports.map((sport) => {
+									const active = selectedSports.includes(sport);
+									const count = sportCounts.get(sport)?.eligible ?? 0;
+									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => toggleSport(sport),
+										className: `flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${active ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-slate-800/80 bg-[#090D16] text-slate-500 hover:text-slate-300"}`,
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "truncate",
+											children: sport
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "font-mono text-[11px] tabular-nums opacity-70",
+											children: count
+										})]
+									}, sport);
+								})]
 							})]
 						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: handleGenerateClick,
-							className: "inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Layers, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Vygenerovat tiket" })]
-						}),
 						customMatches.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "border-t border-slate-800/80 pt-4 space-y-2",
+							className: "space-y-2 border-t border-slate-800/80 pt-3.5",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 								className: "block text-xs font-semibold text-slate-300",
 								children: [
@@ -15514,345 +15613,376 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 										type: "button",
 										onClick: () => onDeleteCustomMatch(cm.id),
 										"aria-label": `Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`,
-										className: "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
+										className: "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400",
 										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" })
 									})]
 								}, cm.id))
 							})]
 						})
 					]
-				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", {
-					className: "space-y-4 lg:col-span-7",
-					children: !generated ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center",
-						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-								className: "font-display text-lg font-semibold text-slate-200",
-								children: nonNegativeSportMatchesCount === 0 ? "Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)" : `Žádný zápas s nezáporným Value (≥ 0,0 %) nesplňuje limit ${minMatchProbability} %`
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-								className: "mt-1.5 text-sm text-slate-400",
-								children: nonNegativeSportMatchesCount === 0 ? "Zápasy se záporným Value (pod 0,0 %) generátor nikdy nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas." : "Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu."
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-5 flex flex-wrap items-center justify-center gap-3",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-									type: "button",
-									onClick: () => {
-										setMinMatchProbability(recommendedMinProb);
-										setVariationIndex(0);
-									},
-									className: "inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
-									children: [
-										"Nastavit doporučený limit (",
-										recommendedMinProb,
-										" %)"
-									]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-									type: "button",
-									onClick: () => {
-										setSelectedSports(ALL_SPORTS);
-										setVariationIndex(0);
-									},
-									className: "inline-flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
-									children: "Vybrat všechny sporty"
-								})]
-							})
-						]
-					}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "rounded-2xl border border-emerald-500/40 bg-[#111827] p-5 sm:p-6",
-						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex flex-col gap-3 border-b border-slate-800/80 pb-4 sm:flex-row sm:items-center sm:justify-between",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex flex-wrap items-center gap-2 text-xs text-emerald-400",
-									children: [
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5" }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "font-semibold",
-											children: activeMode.title
-										}),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "text-slate-600",
-											"aria-hidden": "true",
-											children: "·"
-										}),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-											className: "font-mono tabular-nums text-slate-400",
-											children: [
-												"Limit ≥ ",
-												generated.minMatchProbability,
-												" %"
-											]
-										})
-									]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", {
-									className: "mt-1 font-display text-xl font-bold text-slate-50",
-									children: [
-										"Sestavený tiket (",
-										generated.legs.length,
-										" ",
-										generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů",
-										")"
-									]
-								})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex flex-wrap items-center gap-2.5",
-									children: [riskBadgeStyle && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: `inline-flex min-h-[38px] items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold ${riskBadgeStyle.container} ${riskBadgeStyle.text}`,
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `h-2 w-2 rounded-full ${riskBadgeStyle.dot}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Riziko: ", generated.estimatedRisk] })]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+				})]
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", {
+				className: filtersCollapsed ? "space-y-4" : "space-y-4 lg:col-span-7",
+				children: !generated ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "rounded-2xl border border-slate-800/90 bg-[#111827] p-6 text-center sm:p-8",
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "font-display text-lg font-semibold text-slate-200",
+							children: nonNegativeSportMatchesCount === 0 ? "Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)" : `Žádný zápas s nezáporným Value (≥ 0,0 %) nesplňuje limit ${minMatchProbability} %`
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "mt-1.5 text-sm text-slate-400",
+							children: nonNegativeSportMatchesCount === 0 ? "Zápasy se záporným Value (pod 0,0 %) generátor nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas." : "Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu."
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "mt-5 flex flex-wrap items-center justify-center gap-3",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								onClick: () => {
+									setMinMatchProbability(recommendedMinProb);
+									setVariationIndex(0);
+								},
+								className: "inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
+								children: [
+									"Doporučený limit (",
+									recommendedMinProb,
+									" %)"
+								]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => {
+									setSelectedSports(ALL_SPORTS);
+									setVariationIndex(0);
+								},
+								className: "inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
+								children: "Vybrat všechny sporty"
+							})]
+						})
+					]
+				}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "rounded-2xl border border-emerald-500/40 bg-[#111827] p-4 sm:p-5",
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex flex-col gap-3 border-b border-slate-800/80 pb-3.5 sm:flex-row sm:items-center sm:justify-between",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "font-semibold text-emerald-400",
+										children: activeMode.shortTitle
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										"aria-hidden": "true",
+										children: "·"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "font-mono tabular-nums",
+										children: [
+											"Limit ≥ ",
+											generated.minMatchProbability,
+											" %"
+										]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										"aria-hidden": "true",
+										children: "·"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: riskTextClass,
+										children: ["Riziko: ", generated.estimatedRisk]
+									})
+								]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", {
+								className: "mt-1 font-display text-lg font-bold text-slate-50 sm:text-xl",
+								children: [
+									"Sestavený tiket (",
+									generated.legs.length,
+									" ",
+									generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů",
+									")"
+								]
+							})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								role: "group",
+								"aria-label": "Listování kombinacemi tiketu",
+								className: "inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: handlePrevVariation,
+										disabled: generated.availableCombosCount <= 1,
+										"aria-label": "Předchozí kombinace",
+										title: "Předchozí kombinace",
+										className: "inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronLeft, { className: "h-4 w-4" })
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 										type: "button",
 										onClick: handleNextVariation,
 										disabled: generated.availableCombosCount <= 1,
-										title: generated.availableCombosCount <= 1 ? "Pro tento filtr není dostupná jiná kombinace" : "Vybrat jinou kombinaci zápasů",
-										className: "inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap shrink-0",
+										title: generated.availableCombosCount <= 1 ? "Pro tento filtr není dostupná jiná kombinace" : "Další kombinace zápasů",
+										className: "inline-flex min-h-[40px] items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["Jiná kombinace", comboIndexLabel] })]
-									})]
-								})]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Celková šance na výhru"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-1 block font-mono text-xl font-bold tabular-nums text-slate-50",
-											children: formatPercent(generated.totalProbability)
-										})]
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Celkový kurz"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-400",
-											children: formatOdds(generated.totalOdds)
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Úroveň rizika"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: `mt-1 block font-display text-lg font-bold ${riskBadgeStyle ? riskBadgeStyle.text : "text-slate-100"}`,
-											children: generated.estimatedRisk
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Doporučený vklad"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-1 block font-mono text-xl font-bold tabular-nums text-slate-100",
-											children: formatCZK(generated.recommendedStake)
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "col-span-2 rounded-xl border border-slate-800/80 bg-[#0B101B] p-3.5 sm:col-span-1",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "block text-[11px] text-slate-400",
-											children: "Potenciální výhra"
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "mt-1 block font-mono text-xl font-bold tabular-nums text-emerald-300",
-											children: formatCZK(calculatedWin)
-										})]
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: handleNextVariation,
+										disabled: generated.availableCombosCount <= 1,
+										"aria-label": "Další kombinace",
+										title: "Další kombinace",
+										className: "inline-flex min-h-[40px] min-w-[40px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronRight, { className: "h-4 w-4" })
 									})
 								]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-3 space-y-2 rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5 text-xs text-slate-300",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-start gap-2.5",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-										generated.note,
-										" Doporučený vklad tvoří",
-										" ",
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("strong", {
-											className: "font-mono tabular-nums text-slate-100",
-											children: [(generated.recommendedStake / safeBudget * 100).toFixed(1), " %"]
-										}),
-										" ",
-										"rozpočtu."
-									] })]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "border-t border-slate-800/70 pt-2 font-mono text-[11px] tabular-nums text-slate-400",
-									children: [
-										"Výpočet šance tiketu (součin):",
-										" ",
-										generated.legs.map((l) => formatPercent(l.aiProbability)).join(" × "),
-										" =",
-										" ",
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "font-semibold text-slate-200",
-											children: formatPercent(generated.totalProbability)
-										})
-									]
-								})]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
-								children: generated.legs.map((leg, idx) => {
-									const geminiReason = aiReasons[leg.matchId];
-									const statFallback = statFallbackReasons[leg.matchId];
-									const activeReason = geminiReason || statFallback?.text;
-									const isLoadingReason = Boolean(loadingMatchIds[leg.matchId]);
-									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex flex-col gap-3 p-4",
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "mt-3.5 grid grid-cols-2 gap-2.5",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-[11px] text-slate-400",
+										children: "Šance na výhru"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-50 sm:text-xl",
+										children: formatPercent(generated.totalProbability)
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-[11px] text-slate-400",
+										children: "Celkový kurz"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-400 sm:text-xl",
+										children: formatOdds(generated.totalOdds)
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-[11px] text-slate-400",
+										children: "Doporučený vklad"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-100 sm:text-xl",
+										children: formatCZK(generated.recommendedStake)
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "rounded-xl border border-slate-800/80 bg-[#0B101B] p-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-[11px] text-slate-400",
+										children: "Potenciální výhra"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-300 sm:text-xl",
+										children: formatCZK(calculatedWin)
+									})]
+								})
+							]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+							className: "mt-2.5 text-xs leading-relaxed text-slate-400",
+							children: [
+								generated.note,
+								" Vklad",
+								" ",
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: "font-mono font-semibold tabular-nums text-slate-200",
+									children: [(generated.recommendedStake / safeBudget * 100).toFixed(1), " %"]
+								}),
+								" ",
+								"rozpočtu."
+							]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+							className: "mt-4 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
+							children: generated.legs.map((leg, idx) => {
+								const geminiReason = aiReasons[leg.matchId];
+								const statFallback = statFallbackReasons[leg.matchId];
+								const activeReason = geminiReason || statFallback?.text;
+								const isExpanded = Boolean(expandedMatchIds[leg.matchId] && activeReason);
+								const isLoadingReason = Boolean(loadingMatchIds[leg.matchId]);
+								return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex flex-col gap-2.5 p-3.5 sm:p-4",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+											className: "min-w-0 space-y-1",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "flex flex-wrap items-center gap-1.5 text-xs text-slate-400",
+													children: [
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+															className: "font-mono text-slate-500",
+															children: ["#", idx + 1]
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.sport }),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+															"aria-hidden": "true",
+															children: "·"
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.league }),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+															"aria-hidden": "true",
+															children: "·"
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+															className: "font-mono tabular-nums",
+															children: leg.kickoffTime
+														})
+													]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+													className: "font-display text-sm font-bold text-slate-100 sm:text-base",
+													children: [
+														leg.homeTeam,
+														" vs. ",
+														leg.awayTeam
+													]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "flex flex-wrap items-center gap-x-3 gap-y-1 text-xs",
+													children: [
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+															className: "font-semibold text-emerald-300",
+															children: leg.recommendedPick
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+															className: "font-mono tabular-nums text-slate-300",
+															children: ["Šance ", formatPercent(leg.aiProbability)]
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+															className: `font-mono tabular-nums ${leg.valueScore > 0 ? "text-emerald-400" : "text-slate-400"}`,
+															children: ["Value ", formatPercent(leg.valueScore, true)]
+														})
+													]
+												})
+											]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center justify-between gap-3 shrink-0 sm:justify-end",
 											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "min-w-0 space-y-1",
-												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-														className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
-														children: [
-															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-																className: "font-mono text-slate-500",
-																children: ["#", idx + 1]
-															}),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.sport }),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-																"aria-hidden": "true",
-																children: "·"
-															}),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.league }),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-																"aria-hidden": "true",
-																children: "·"
-															}),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-																className: "font-mono tabular-nums",
-																children: leg.kickoffTime
-															})
-														]
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-														className: "font-display text-sm font-bold text-slate-100 sm:text-base",
-														children: [
-															leg.homeTeam,
-															" vs. ",
-															leg.awayTeam
-														]
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-														className: "flex flex-wrap items-center gap-3 text-xs",
-														children: [
-															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-																className: "font-semibold text-emerald-300",
-																children: leg.recommendedPick
-															}),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-																className: "font-mono tabular-nums text-slate-300",
-																children: ["Šance: ", formatPercent(leg.aiProbability)]
-															}),
-															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-																className: `font-mono tabular-nums ${leg.valueScore > 0 ? "text-emerald-400" : "text-slate-400"}`,
-																children: ["Value ", formatPercent(leg.valueScore, true)]
-															})
-														]
-													})
-												]
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex items-center justify-between gap-3 sm:justify-end shrink-0",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "text-left sm:text-right",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														className: "block text-[11px] text-slate-400",
-														children: "Betano kurz"
-													}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														className: "font-mono text-base font-bold tabular-nums text-slate-100",
-														children: formatOdds(leg.betanoOdds)
-													})]
-												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-													href: BETANO_HOME_URL,
-													target: "_blank",
-													rel: "noopener noreferrer",
-													onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
-													className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+												className: "text-left sm:text-right",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "block text-[11px] text-slate-400",
+													children: "Betano kurz"
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "font-mono text-base font-bold tabular-nums text-slate-100",
+													children: formatOdds(leg.betanoOdds)
 												})]
-											})]
-										}), activeReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "flex items-center justify-between gap-2 text-[11px]",
-												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? `${aiModels[leg.matchId] ?? "Gemini AI"} · AI analýza` : "Statistický rozbor zápasu" })]
-												})
-											}), renderFormattedGeminiReasoning(activeReason)]
-										}), !geminiReason && statFallback?.apiStatus && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-											className: "mt-1.5 px-1 font-mono text-[11px] leading-snug text-slate-500",
-											children: ["Stav API: ", statFallback.apiStatus]
-										})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex flex-col gap-2",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "flex flex-wrap items-center gap-2",
-												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-													type: "button",
-													disabled: isLoadingReason,
-													onClick: () => void handleFetchSingleAnalysis(leg),
-													className: "inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55",
-													children: [isLoadingReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 shrink-0 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingReason ? "Načítám analýzu..." : "Zobrazit AI analýzu" })]
-												})
-											}), isLoadingReason && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
-												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "space-y-1.5",
-													"aria-busy": "true",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-4/5 animate-pulse rounded bg-slate-800" })]
-												})
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+												href: BETANO_HOME_URL,
+												target: "_blank",
+												rel: "noopener noreferrer",
+												onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
+												className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
 											})]
 										})]
-									}, leg.matchId);
-								})
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-5 flex flex-col gap-3 border-t border-slate-800/80 pt-5 sm:flex-row sm:items-end sm:justify-between",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "w-full sm:w-48",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
-										htmlFor: "actual-stake-input",
-										className: "block text-xs font-medium text-slate-400",
-										children: "Vklad pro uložení (Kč)"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										id: "actual-stake-input",
-										type: "number",
-										min: 5,
-										step: 5,
-										value: customStake,
-										onChange: (e) => {
-											setCustomStake(Number(e.target.value));
-											setSavedFeedback(false);
-										},
-										onBlur: () => setCustomStake((s) => Math.max(5, Math.round(s || 5))),
-										className: "mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+									}), isExpanded && activeReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center justify-between gap-2 text-[11px]",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+												className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? `${aiModels[leg.matchId] ?? "gemini-3-flash-preview"} · AI analýza` : "Statistický rozbor zápasu" })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+												type: "button",
+												onClick: () => handleCollapseAnalysis(leg.matchId),
+												className: "inline-flex min-h-[30px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Sbalit" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "h-3.5 w-3.5" })]
+											})]
+										}), renderFormattedGeminiReasoning(activeReason)]
+									}), !geminiReason && statFallback?.apiStatus && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "mt-1.5 px-1 font-mono text-[11px] leading-snug text-slate-500",
+										children: ["Stav API: ", statFallback.apiStatus]
+									})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex flex-col gap-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "flex flex-wrap items-center gap-2",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+												type: "button",
+												disabled: isLoadingReason,
+												onClick: () => void handleOpenOrFetchAnalysis(leg),
+												className: "inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55",
+												children: [isLoadingReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 shrink-0 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingReason ? "Načítám analýzu..." : activeReason ? "Zobrazit AI analýzu (uloženo)" : "Zobrazit AI analýzu" })]
+											})
+										}), isLoadingReason && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "space-y-1.5",
+												"aria-busy": "true",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-4/5 animate-pulse rounded bg-slate-800" })]
+											})
+										})]
 									})]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-									type: "button",
-									onClick: handleSave,
-									disabled: savedFeedback,
-									className: `inline-flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-bold transition-colors whitespace-nowrap ${savedFeedback ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
-									children: savedFeedback ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Uloženo do Bankrollu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BookmarkCheck, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Uložit tiket do Bankrollu" })] })
-								})]
+								}, leg.matchId);
 							})
-						]
-					})
-				})]
-			})
-		]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "mt-4 flex flex-col gap-3 border-t border-slate-800/80 pt-4 sm:flex-row sm:items-end sm:justify-between",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "w-full sm:w-44",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+									htmlFor: "actual-stake-input",
+									className: "block text-xs font-medium text-slate-400",
+									children: "Vklad pro uložení (Kč)"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+									id: "actual-stake-input",
+									type: "text",
+									inputMode: "numeric",
+									placeholder: "0",
+									value: customStakeInput,
+									onChange: (e) => {
+										setCustomStakeInput(sanitizeIntegerInput(e.target.value));
+										setSavedFeedback(false);
+									},
+									className: "mt-1 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: handleSave,
+								disabled: savedFeedback,
+								className: `inline-flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-bold transition-colors whitespace-nowrap ${savedFeedback ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
+								children: savedFeedback ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Uloženo do Bankrollu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BookmarkCheck, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Uložit tiket do Bankrollu" })] })
+							})]
+						})
+					]
+				})
+			})]
+		})]
 	});
 };
 // src/components/BankrollStats.tsx
-var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket, onResetDemoHistory, onStartFromScratch, onOpenBetano }) => {
+var BankrollStats = ({ tickets, initialBankroll, activeMatches, notificationsEnabled, notificationLeadMinutes, onUpdateNotifications, highlightedWinTicketId, onSettleTicket, onDeleteTicket, onResetDemoHistory, onStartFromScratch, onOpenBetano }) => {
 	const [statusFilter, setStatusFilter] = (0, import_react.useState)("all");
 	const [hoveredIdx, setHoveredIdx] = (0, import_react.useState)(null);
+	const [nowMs, setNowMs] = (0, import_react.useState)(() => Date.now());
+	const [isNotifPopoverOpen, setIsNotifPopoverOpen] = (0, import_react.useState)(false);
+	const notifPopoverRef = (0, import_react.useRef)(null);
+	(0, import_react.useEffect)(() => {
+		setNowMs(Date.now());
+		const timer = window.setInterval(() => {
+			setNowMs(Date.now());
+		}, 15e3);
+		return () => window.clearInterval(timer);
+	}, []);
+	(0, import_react.useEffect)(() => {
+		if (!isNotifPopoverOpen) return;
+		const handleOutside = (e) => {
+			if (notifPopoverRef.current && !notifPopoverRef.current.contains(e.target)) setIsNotifPopoverOpen(false);
+		};
+		const handleEsc = (e) => {
+			if (e.key === "Escape") setIsNotifPopoverOpen(false);
+		};
+		document.addEventListener("mousedown", handleOutside);
+		document.addEventListener("keydown", handleEsc);
+		return () => {
+			document.removeEventListener("mousedown", handleOutside);
+			document.removeEventListener("keydown", handleEsc);
+		};
+	}, [isNotifPopoverOpen]);
+	const permissionState = getBrowserNotificationPermission();
+	const isNotificationsActive = notificationsEnabled && permissionState === "granted";
 	const metrics = (0, import_react.useMemo)(() => {
 		const settled = tickets.filter((t) => t.status === "won" || t.status === "lost");
 		const pending = tickets.filter((t) => t.status === "pending");
@@ -15945,17 +16075,81 @@ var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket,
 					children: "Bankroll a statistiky"
 				})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "flex flex-wrap items-center gap-2 self-start sm:self-auto",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-						type: "button",
-						onClick: onStartFromScratch,
-						className: "inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 whitespace-nowrap",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Začít od nuly" })]
-					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-						type: "button",
-						onClick: onResetDemoHistory,
-						className: "inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RotateCcw, { className: "h-3.5 w-3.5 text-slate-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Obnovit ukázkovou bilanci" })]
-					})]
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "relative",
+							ref: notifPopoverRef,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => setIsNotifPopoverOpen((prev) => !prev),
+								"aria-expanded": isNotifPopoverOpen,
+								"aria-label": "Oznámení (začátek zápasu a výhry)",
+								title: "Oznámení (začátek zápasu a výhry)",
+								className: `inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${permissionState === "denied" || permissionState === "unsupported" ? "border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" : isNotificationsActive ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "border-slate-800 bg-[#111827] text-slate-300 hover:border-slate-700 hover:text-slate-100"}`,
+								children: permissionState === "denied" || permissionState === "unsupported" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellOff, { className: "h-4 w-4" }) : isNotificationsActive ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellRing, { className: "h-4 w-4" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "h-4 w-4" })
+							}), isNotifPopoverOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								role: "dialog",
+								"aria-label": "Nastavení oznámení",
+								className: "absolute left-0 top-12 z-40 w-72 rounded-2xl border border-slate-700/90 bg-[#0F1623] p-4 shadow-2xl sm:left-auto sm:right-0",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center justify-between gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "text-xs font-semibold text-slate-100",
+											children: "Oznámení (začátek zápasu a výhry)"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											role: "switch",
+											"aria-checked": isNotificationsActive,
+											onClick: () => void onUpdateNotifications(!isNotificationsActive, notificationLeadMinutes),
+											className: `relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${isNotificationsActive ? "border-emerald-500 bg-emerald-500" : "border-slate-700 bg-slate-800"}`,
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isNotificationsActive ? "translate-x-6" : "translate-x-1"}` })
+										})]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "mt-3 border-t border-slate-800 pt-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "block text-[11px] font-medium text-slate-400",
+											children: "Čas upozornění před začátkem:"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "mt-1.5 grid grid-cols-2 gap-1.5",
+											children: [{
+												value: 15,
+												label: "15 min předem"
+											}, {
+												value: 0,
+												label: "Při začátku"
+											}].map((opt) => {
+												const active = notificationLeadMinutes === opt.value;
+												return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+													type: "button",
+													onClick: () => void onUpdateNotifications(notificationsEnabled, opt.value),
+													className: `min-h-[34px] rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${active ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300 font-semibold" : "border-slate-800 bg-[#090D16] text-slate-400 hover:text-slate-200"}`,
+													children: opt.label
+												}, opt.value);
+											})
+										})]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "mt-2.5 text-[11px] leading-snug text-slate-400",
+										children: permissionState === "denied" ? "Prohlížeč oznámení zablokoval. Povolte je v nastavení webu." : permissionState === "unsupported" ? "Prohlížeč nepodporuje Web Notifications API." : "Posíláme pouze upozornění na start aktivních tiketů a výhry (při prohře ticho)."
+									})
+								]
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: onStartFromScratch,
+							className: "inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 whitespace-nowrap",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { className: "h-3.5 w-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Začít od nuly" })]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: onResetDemoHistory,
+							className: "inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RotateCcw, { className: "h-3.5 w-3.5 text-slate-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Obnovit ukázkovou bilanci" })]
+						})
+					]
 				})]
 			}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
@@ -16221,33 +16415,55 @@ var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket,
 							hour: "2-digit",
 							minute: "2-digit"
 						});
+						const countdown = formatTicketCountdownStatus(ticket, nowMs, activeMatches);
+						const isWinHighlighted = ticket.id === highlightedWinTicketId && ticket.status === "won";
 						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-							className: `rounded-2xl border bg-[#111827] p-5 ${ticket.status === "won" ? "border-emerald-500/35" : ticket.status === "lost" ? "border-rose-500/30" : "border-slate-800/90"}`,
+							className: `rounded-2xl border p-5 transition-all duration-500 ${isWinHighlighted ? "border-emerald-400 bg-emerald-950/25 ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-500/15" : ticket.status === "won" ? "border-emerald-500/35 bg-[#111827]" : ticket.status === "lost" ? "border-rose-500/30 bg-[#111827]" : "border-slate-800/90 bg-[#111827]"}`,
 							children: [
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "font-mono tabular-nums",
-												children: dateLabel
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												"aria-hidden": "true",
-												children: "·"
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: ticket.riskLevel }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												"aria-hidden": "true",
-												children: "·"
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [ticket.legs.length, " příležitostí"] })
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
-										className: "mt-1 font-display text-base font-bold text-slate-100",
-										children: ticket.label
-									})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "font-mono tabular-nums",
+													children: dateLabel
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													"aria-hidden": "true",
+													children: "·"
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: ticket.riskLevel }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													"aria-hidden": "true",
+													children: "·"
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [ticket.legs.length, " příležitostí"] })
+											]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
+											className: "mt-1 font-display text-base font-bold text-slate-100",
+											children: ticket.label
+										}),
+										countdown && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "mt-2 flex flex-wrap items-center gap-2",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+												className: `inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs font-semibold tabular-nums ${countdown.state === "live" ? "border-emerald-500/45 bg-emerald-500/15 text-emerald-300" : "border-amber-500/40 bg-amber-500/10 text-amber-200"}`,
+												children: [countdown.state === "live" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "h-2 w-2 animate-pulse rounded-full bg-emerald-400",
+													"aria-hidden": "true"
+												}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Clock, { className: "h-3.5 w-3.5 shrink-0 text-amber-300" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: countdown.label })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+												className: "text-[11px] text-slate-400",
+												children: ["Nejbližší: ", countdown.matchTitle]
+											})]
+										}),
+										isWinHighlighted && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "mt-1.5 text-xs font-bold text-emerald-300",
+											children: ["🏆 Výherní tiket! Vyhrál jsi +", formatCZK(ticket.potentialWin)]
+										})
+									] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 										className: "flex items-center gap-3 shrink-0",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 											className: `text-xs font-bold ${ticket.status === "won" ? "text-emerald-400" : ticket.status === "lost" ? "text-rose-400" : "text-amber-300"}`,
@@ -16352,54 +16568,209 @@ var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket,
 		]
 	});
 };
+// src/hooks/usePWAInstall.ts
+function usePWAInstall() {
+	const [deferredPrompt, setDeferredPrompt] = (0, import_react.useState)(null);
+	const [isInstalled, setIsInstalled] = (0, import_react.useState)(false);
+	const [isIOS, setIsIOS] = (0, import_react.useState)(false);
+	(0, import_react.useEffect)(() => {
+		const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+		setIsInstalled(isStandalone);
+		const userAgent = window.navigator.userAgent.toLowerCase();
+		const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
+		setIsIOS(isIOSDevice);
+		const handleBeforeInstallPrompt = (e) => {
+			e.preventDefault();
+			setDeferredPrompt(e);
+		};
+		const handleAppInstalled = () => {
+			setIsInstalled(true);
+			setDeferredPrompt(null);
+		};
+		window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+		window.addEventListener("appinstalled", handleAppInstalled);
+		return () => {
+			window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+			window.removeEventListener("appinstalled", handleAppInstalled);
+		};
+	}, []);
+	const install = async () => {
+		if (!deferredPrompt) return false;
+		await deferredPrompt.prompt();
+		const { outcome } = await deferredPrompt.userChoice;
+		if (outcome === "accepted") {
+			setIsInstalled(true);
+			setDeferredPrompt(null);
+			return true;
+		}
+		return false;
+	};
+	return {
+		isInstallable: !!deferredPrompt,
+		isInstalled,
+		isIOS,
+		install
+	};
+}
+// src/components/PWAInstallButton.tsx
+var PWAInstallButton = ({ variant = "compact" }) => {
+	const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+	const [showIOSGuide, setShowIOSGuide] = (0, import_react.useState)(false);
+	if (isInstalled) return variant === "full" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300",
+		children: "Aplikace BetEdge AI je již nainstalována jako samostatná aplikace."
+	}) : null;
+	if (isInstallable) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+		type: "button",
+		onClick: install,
+		className: `inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 focus-visible:outline-2 focus-visible:outline-emerald-400 whitespace-nowrap shrink-0 ${variant === "full" ? "w-full sm:w-auto" : ""}`,
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Nainstalovat aplikaci (PWA)" })]
+	});
+	if (isIOS) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+		type: "button",
+		onClick: () => setShowIOSGuide(true),
+		className: `inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 whitespace-nowrap shrink-0 ${variant === "full" ? "w-full sm:w-auto" : ""}`,
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Share, { className: "h-4 w-4 shrink-0 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Přidat na plochu (iOS)" })]
+	}), showIOSGuide && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm",
+		role: "dialog",
+		"aria-modal": "true",
+		"aria-labelledby": "ios-install-title",
+		children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "w-full max-w-sm rounded-2xl border border-slate-800 bg-[#111827] p-6 shadow-2xl",
+			children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-start justify-between gap-4",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
+						id: "ios-install-title",
+						className: "text-lg font-bold text-slate-100",
+						children: "Instalace na iPhone / iPad"
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: () => setShowIOSGuide(false),
+						className: "flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100",
+						"aria-label": "Zavřít návod",
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "h-5 w-5" })
+					})]
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("ol", {
+					className: "mt-4 space-y-3 text-sm text-slate-300",
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+							"1. Klepněte na ikonu ",
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Sdílet" }),
+							" ve spodní liště Safari."
+						] }),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+							"2. Posuňte nabídku níže a vyberte ",
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Přidat na plochu" }),
+							"."
+						] }),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+							"3. Potvrďte tlačítkem ",
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Přidat" }),
+							" v pravém horním rohu."
+						] })
+					]
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+					type: "button",
+					onClick: () => setShowIOSGuide(false),
+					className: "mt-6 min-h-[44px] w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500",
+					children: "Rozumím"
+				})
+			]
+		})
+	})] });
+	if (variant === "full") return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+		className: "rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-relaxed text-slate-400",
+		children: [
+			"V mobilním prohlížeči Chrome otevřete menu prohlížeče (tři tečky) a zvolte",
+			" ",
+			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+				className: "font-semibold text-slate-200",
+				children: "Přidat na plochu"
+			}),
+			" nebo",
+			" ",
+			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+				className: "font-semibold text-slate-200",
+				children: "Nainstalovat aplikaci"
+			}),
+			"."
+		]
+	});
+	return null;
+};
 // src/components/SettingsView.tsx
 var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive, liveStatusMessage, liveError, lastUpdatedAt, remainingQuota }) => {
 	const [oddsKey, setOddsKey] = (0, import_react.useState)(settings.theOddsApiKey);
 	const [sportsKey, setSportsKey] = (0, import_react.useState)(settings.apiSportsKey);
 	const [geminiKey, setGeminiKey] = (0, import_react.useState)((settings.geminiApiKey ?? "").trim());
-	const [bankroll, setBankroll] = (0, import_react.useState)(settings.initialBankroll);
+	const [bankrollInput, setBankrollInput] = (0, import_react.useState)(() => String(Math.max(5, Math.round(settings.initialBankroll))));
 	const [demoMode, setDemoMode] = (0, import_react.useState)(settings.demoMode);
+	const [notificationsEnabled, setNotificationsEnabled] = (0, import_react.useState)(Boolean(settings.notificationsEnabled));
+	const [notificationLeadMinutes, setNotificationLeadMinutes] = (0, import_react.useState)(settings.notificationLeadMinutes === 0 ? 0 : 15);
+	const [permissionState, setPermissionState] = (0, import_react.useState)(() => getBrowserNotificationPermission());
 	const [savedNotice, setSavedNotice] = (0, import_react.useState)(false);
 	(0, import_react.useEffect)(() => {
 		setOddsKey(settings.theOddsApiKey);
 		setSportsKey(settings.apiSportsKey);
 		setGeminiKey((settings.geminiApiKey ?? "").trim());
-		setBankroll(settings.initialBankroll);
+		setBankrollInput(String(Math.max(5, Math.round(settings.initialBankroll))));
 		setDemoMode(settings.demoMode);
+		setNotificationsEnabled(Boolean(settings.notificationsEnabled));
+		setNotificationLeadMinutes(settings.notificationLeadMinutes === 0 ? 0 : 15);
+		setPermissionState(getBrowserNotificationPermission());
 	}, [settings]);
+	const buildCurrentSettings = (overrides = {}) => {
+		const safeBankroll = parseAmountInput(bankrollInput, settings.initialBankroll, 5);
+		return {
+			theOddsApiKey: oddsKey.trim(),
+			apiSportsKey: sportsKey.trim(),
+			geminiApiKey: geminiKey.trim(),
+			demoMode,
+			initialBankroll: safeBankroll,
+			notificationsEnabled,
+			notificationLeadMinutes,
+			...overrides
+		};
+	};
+	const handleToggleNotifications = async () => {
+		if (!notificationsEnabled) {
+			const perm = await requestBrowserNotificationPermission();
+			setPermissionState(perm);
+			if (perm === "denied" || perm === "unsupported") {
+				setNotificationsEnabled(false);
+				onUpdateSettings(buildCurrentSettings({ notificationsEnabled: false }));
+				return;
+			}
+			setNotificationsEnabled(true);
+			onUpdateSettings(buildCurrentSettings({ notificationsEnabled: true }));
+			return;
+		}
+		setNotificationsEnabled(false);
+		onUpdateSettings(buildCurrentSettings({ notificationsEnabled: false }));
+	};
+	const handleSelectLeadMinutes = (lead) => {
+		setNotificationLeadMinutes(lead);
+		onUpdateSettings(buildCurrentSettings({ notificationLeadMinutes: lead }));
+	};
 	const handleSave = async (e) => {
 		e.preventDefault();
-		const trimmedOdds = oddsKey.trim();
-		const trimmedSports = sportsKey.trim();
-		const trimmedGemini = geminiKey.trim();
-		const safeBankroll = Math.max(5, Math.round(bankroll || 5));
-		setBankroll(safeBankroll);
-		onUpdateSettings({
-			theOddsApiKey: trimmedOdds,
-			apiSportsKey: trimmedSports,
-			geminiApiKey: trimmedGemini,
-			demoMode,
-			initialBankroll: safeBankroll
-		});
+		const next = buildCurrentSettings();
+		setBankrollInput(String(next.initialBankroll));
+		onUpdateSettings(next);
 		setSavedNotice(true);
 		setTimeout(() => setSavedNotice(false), 2500);
-		if (!demoMode && trimmedOdds !== settings.theOddsApiKey.trim()) await onFetchLiveData(trimmedOdds, trimmedSports, false);
+		if (!next.demoMode && next.theOddsApiKey !== settings.theOddsApiKey.trim()) await onFetchLiveData(next.theOddsApiKey, next.apiSportsKey, false);
 	};
 	const handleTestAndLoad = async () => {
-		const trimmedOdds = oddsKey.trim();
-		const trimmedSports = sportsKey.trim();
-		const trimmedGemini = geminiKey.trim();
-		const safeBankroll = Math.max(5, Math.round(bankroll || 5));
-		setBankroll(safeBankroll);
 		setDemoMode(false);
-		onUpdateSettings({
-			theOddsApiKey: trimmedOdds,
-			apiSportsKey: trimmedSports,
-			geminiApiKey: trimmedGemini,
-			demoMode: false,
-			initialBankroll: safeBankroll
-		});
-		await onFetchLiveData(trimmedOdds, trimmedSports, true);
+		const next = buildCurrentSettings({ demoMode: false });
+		setBankrollInput(String(next.initialBankroll));
+		onUpdateSettings(next);
+		await onFetchLiveData(next.theOddsApiKey, next.apiSportsKey, true);
 	};
 	const parsedQuota = remainingQuota !== null ? Number(remainingQuota) : null;
 	const quotaTone = parsedQuota === null || !Number.isFinite(parsedQuota) ? "border-slate-700 bg-[#090D16] text-slate-300" : parsedQuota < 20 ? "border-rose-500/40 bg-rose-500/10 text-rose-300" : parsedQuota < 80 ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
@@ -16449,17 +16820,76 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 							onClick: () => {
 								const next = !demoMode;
 								setDemoMode(next);
-								onUpdateSettings({
-									theOddsApiKey: oddsKey.trim(),
-									apiSportsKey: sportsKey.trim(),
-									geminiApiKey: geminiKey.trim(),
-									demoMode: next,
-									initialBankroll: Math.max(5, Math.round(bankroll || 5))
-								});
+								onUpdateSettings(buildCurrentSettings({ demoMode: next }));
 							},
 							className: `relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${demoMode ? "border-emerald-500 bg-emerald-500" : "border-slate-700 bg-slate-800"}`,
 							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${demoMode ? "translate-x-6" : "translate-x-1"}` })
 						})]
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "space-y-3 rounded-xl border border-slate-800/80 bg-[#0B101B] p-4",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-4",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-start gap-2.5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+										className: "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-emerald-400",
+										children: permissionState === "denied" || permissionState === "unsupported" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellOff, { className: "h-4 w-4 text-rose-400" }) : notificationsEnabled && permissionState === "granted" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellRing, { className: "h-4 w-4 text-emerald-400" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "h-4 w-4 text-slate-400" })
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "block text-sm font-semibold text-slate-100",
+										children: "Oznámení (začátek zápasu a výhry)"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "mt-0.5 block text-xs text-slate-400",
+										children: "Systémové upozornění pouze pro uložené aktivní tikety a výhry (při prohře úplné ticho)."
+									})] })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									role: "switch",
+									"aria-checked": notificationsEnabled && permissionState === "granted",
+									"aria-label": "Oznámení (začátek zápasu a výhry)",
+									onClick: () => void handleToggleNotifications(),
+									className: `relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${notificationsEnabled && permissionState === "granted" ? "border-emerald-500 bg-emerald-500" : "border-slate-700 bg-slate-800"}`,
+									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${notificationsEnabled && permissionState === "granted" ? "translate-x-6" : "translate-x-1"}` })
+								})]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "text-xs font-medium text-slate-300",
+									children: "Kdy upozornit před zápasem:"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									role: "radiogroup",
+									"aria-label": "Čas upozornění před začátkem",
+									className: "inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1",
+									children: [{
+										value: 15,
+										label: "15 min předem"
+									}, {
+										value: 0,
+										label: "Přesně při začátku"
+									}].map((opt) => {
+										const selected = notificationLeadMinutes === opt.value;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											role: "radio",
+											"aria-checked": selected,
+											onClick: () => handleSelectLeadMinutes(opt.value),
+											className: `min-h-[34px] rounded-lg px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${selected ? "bg-emerald-500 text-slate-950 font-semibold" : "text-slate-400 hover:text-slate-200"}`,
+											children: opt.label
+										}, opt.value);
+									})
+								})]
+							}),
+							permissionState === "denied" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "text-xs text-rose-300",
+								children: "Oprávnění k oznámením je v prohlížeči zablokováno. Povolte notifikace v nastavení stránky."
+							}),
+							permissionState === "unsupported" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "text-xs text-amber-300",
+								children: "Tento prohlížeč nebo prostředí nepodporuje Web Notifications API."
+							})
+						]
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -16539,13 +16969,12 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 						children: "Počáteční kapitál / Bankroll (Kč)"
 					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
 						id: "initial-bankroll",
-						type: "number",
-						min: 5,
-						step: 5,
-						value: bankroll,
-						onChange: (e) => setBankroll(Number(e.target.value)),
-						onBlur: () => setBankroll((b) => Math.max(5, Math.round(b || 5))),
-						className: "mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+						type: "text",
+						inputMode: "numeric",
+						placeholder: "0",
+						value: bankrollInput,
+						onChange: (e) => setBankrollInput(sanitizeIntegerInput(e.target.value)),
+						className: "mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
 					})] }),
 					lastUpdateLabel && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 						className: "flex items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-[#0B101B] px-4 py-2.5 text-xs text-slate-300",
@@ -16662,15 +17091,16 @@ var TicketSlipDrawer = ({ isOpen, onClose, selectedMatches, currentBankroll, onR
 	const totalOdds = Number(selectedMatches.reduce((acc, m) => acc * m.odds.betano, 1).toFixed(2));
 	const jointProb = Number((selectedMatches.reduce((acc, m) => acc * (m.aiProbability / 100), 1) * 100).toFixed(1));
 	const recommendedStake = selectedMatches.length > 0 ? calculateSafeStake(currentBankroll, totalOdds, jointProb, "Vlastní") : 0;
-	const [stake, setStake] = (0, import_react.useState)(recommendedStake || 200);
+	const [stakeInput, setStakeInput] = (0, import_react.useState)(() => String(recommendedStake || 200));
 	(0, import_react.useEffect)(() => {
-		if (recommendedStake > 0) setStake(recommendedStake);
+		if (recommendedStake > 0) setStakeInput(String(recommendedStake));
 	}, [recommendedStake]);
 	if (!isOpen) return null;
-	const potentialWin = Math.round(Math.max(5, stake || 5) * totalOdds);
+	const parsedStake = Number(stakeInput);
+	const potentialWin = Math.round((stakeInput === "" || !Number.isFinite(parsedStake) ? 0 : Math.round(parsedStake)) * totalOdds);
 	const handleSave = () => {
 		if (selectedMatches.length === 0) return;
-		const actualStake = Math.max(5, Math.round(stake || 5));
+		const actualStake = parseAmountInput(stakeInput, recommendedStake || 200, 5);
 		onSaveTicket({
 			id: `tkt-manual-${Date.now()}`,
 			createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -16683,6 +17113,7 @@ var TicketSlipDrawer = ({ isOpen, onClose, selectedMatches, currentBankroll, onR
 				homeTeam: m.homeTeam,
 				awayTeam: m.awayTeam,
 				kickoffTime: m.kickoffTime,
+				kickoffIso: m.kickoffIso,
 				recommendedPick: m.recommendedPick,
 				marketLabel: m.marketLabel,
 				betanoOdds: m.odds.betano,
@@ -16853,13 +17284,12 @@ var TicketSlipDrawer = ({ isOpen, onClose, selectedMatches, currentBankroll, onR
 									]
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
 									id: "slip-stake",
-									type: "number",
-									min: 5,
-									step: 5,
-									value: stake,
-									onChange: (e) => setStake(Number(e.target.value)),
-									onBlur: () => setStake((s) => Math.max(5, Math.round(s || 5))),
-									className: "mt-1 min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3 font-mono text-sm font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+									type: "text",
+									inputMode: "numeric",
+									placeholder: "0",
+									value: stakeInput,
+									onChange: (e) => setStakeInput(sanitizeIntegerInput(e.target.value)),
+									className: "mt-1 min-h-[42px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3 font-mono text-sm font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
 								})]
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 								type: "button",
@@ -17337,7 +17767,9 @@ var DEFAULT_SETTINGS = {
 	apiSportsKey: "",
 	geminiApiKey: "",
 	demoMode: false,
-	initialBankroll: 1e4
+	initialBankroll: 1e4,
+	notificationsEnabled: false,
+	notificationLeadMinutes: 15
 };
 var CACHE_TTL_MS = 36e5;
 function getKeyFingerprint(apiKey) {
@@ -17362,14 +17794,25 @@ function App() {
 	const [isSlipOpen, setIsSlipOpen] = (0, import_react.useState)(false);
 	const [isCustomModalOpen, setIsCustomModalOpen] = (0, import_react.useState)(false);
 	const [toastMessage, setToastMessage] = (0, import_react.useState)(null);
+	const [highlightedWinTicketId, setHighlightedWinTicketId] = (0, import_react.useState)(null);
 	const lastAttemptedKeyRef = (0, import_react.useRef)(null);
 	const oddsCacheRef = (0, import_react.useRef)(oddsCache);
 	oddsCacheRef.current = oddsCache;
+	const winHighlightTimerRef = (0, import_react.useRef)(null);
+	const prevTicketStatusesRef = (0, import_react.useRef)(null);
 	const showToast = (0, import_react.useCallback)((msg) => {
 		setToastMessage(msg);
 		setTimeout(() => {
 			setToastMessage((prev) => prev === msg ? null : prev);
 		}, 3200);
+	}, []);
+	const triggerWinHighlight = (0, import_react.useCallback)((ticketId) => {
+		setHighlightedWinTicketId(ticketId);
+		if (winHighlightTimerRef.current !== null) window.clearTimeout(winHighlightTimerRef.current);
+		winHighlightTimerRef.current = window.setTimeout(() => {
+			setHighlightedWinTicketId((prev) => prev === ticketId ? null : prev);
+			winHighlightTimerRef.current = null;
+		}, 4200);
 	}, []);
 	const handleOpenBetano = (0, import_react.useCallback)((homeTeam, awayTeam, recommendedPick) => {
 		const copiedName = copyMatchForBetano(homeTeam, awayTeam, recommendedPick);
@@ -17446,6 +17889,71 @@ function App() {
 		const settledProfit = tickets.filter((t) => t.status === "won" || t.status === "lost").reduce((sum, t) => sum + t.profit, 0);
 		return settings.initialBankroll + settledProfit;
 	}, [tickets, settings.initialBankroll]);
+	const handleUpdateNotifications = (0, import_react.useCallback)(async (enabled, leadMinutes) => {
+		if (enabled) {
+			const perm = await requestBrowserNotificationPermission();
+			if (perm === "unsupported") {
+				setSettings((prev) => ({
+					...prev,
+					notificationsEnabled: false,
+					notificationLeadMinutes: leadMinutes
+				}));
+				showToast("Tento prohlížeč nepodporuje systémová oznámení.");
+				return;
+			}
+			if (perm === "denied") {
+				setSettings((prev) => ({
+					...prev,
+					notificationsEnabled: false,
+					notificationLeadMinutes: leadMinutes
+				}));
+				showToast("Oznámení jsou v prohlížeči zakázána. Povolte je v nastavení stránky.");
+				return;
+			}
+			setSettings((prev) => ({
+				...prev,
+				notificationsEnabled: perm === "granted",
+				notificationLeadMinutes: leadMinutes
+			}));
+			if (perm === "granted") showToast(leadMinutes === 15 ? "Oznámení zapnuta (15 min před začátkem a výhry)." : "Oznámení zapnuta (přesně při začátku a výhry).");
+			return;
+		}
+		setSettings((prev) => ({
+			...prev,
+			notificationsEnabled: false,
+			notificationLeadMinutes: leadMinutes
+		}));
+	}, [setSettings, showToast]);
+	(0, import_react.useEffect)(() => {
+		if (!settings.notificationsEnabled) return;
+		checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+		const intervalId = window.setInterval(() => {
+			checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+		}, 15e3);
+		return () => window.clearInterval(intervalId);
+	}, [
+		tickets,
+		activeMatches,
+		settings.notificationsEnabled,
+		settings.notificationLeadMinutes,
+		settings
+	]);
+	(0, import_react.useEffect)(() => {
+		const prevMap = prevTicketStatusesRef.current;
+		if (prevMap !== null) {
+			for (const ticket of tickets) if (prevMap.get(ticket.id) === "pending" && ticket.status === "won") {
+				triggerWinHighlight(ticket.id);
+				notifyTicketWinIfEligible(ticket, settings);
+			}
+		}
+		const nextMap = /* @__PURE__ */ new Map();
+		for (const t of tickets) nextMap.set(t.id, t.status);
+		prevTicketStatusesRef.current = nextMap;
+	}, [
+		tickets,
+		settings,
+		triggerWinHighlight
+	]);
 	const handleToggleMatchOnSlip = (match) => {
 		setSlipMatchIds((prev) => {
 			if (prev.includes(match.id)) return prev.filter((id) => id !== match.id);
@@ -17458,6 +17966,7 @@ function App() {
 		showToast("Tiket byl uložen do Bankrollu a statistik.");
 	};
 	const handleSettleTicket = (ticketId, status) => {
+		const targetTicket = tickets.find((t) => t.id === ticketId);
 		setTickets((prev) => prev.map((t) => {
 			if (t.id !== ticketId) return t;
 			const profit = status === "won" ? t.potentialWin - t.actualStake : -t.actualStake;
@@ -17467,7 +17976,10 @@ function App() {
 				profit
 			};
 		}));
-		showToast(status === "won" ? "Tiket označen jako Výhra." : "Tiket označen jako Prohra.");
+		if (status === "won" && targetTicket) {
+			const netProfit = targetTicket.potentialWin - targetTicket.actualStake;
+			if (netProfit > 0) showToast(`🏆 Výherní tiket! Vyhrál jsi +${formatCZK(targetTicket.potentialWin)} (čistý zisk +${formatCZK(netProfit)})`);
+		}
 	};
 	const handleDeleteTicket = (ticketId) => {
 		setTickets((prev) => prev.filter((t) => t.id !== ticketId));
@@ -17527,6 +18039,11 @@ function App() {
 					activeTab === "bankroll" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BankrollStats, {
 						tickets,
 						initialBankroll: settings.initialBankroll,
+						activeMatches,
+						notificationsEnabled: Boolean(settings.notificationsEnabled),
+						notificationLeadMinutes: settings.notificationLeadMinutes === 0 ? 0 : 15,
+						onUpdateNotifications: handleUpdateNotifications,
+						highlightedWinTicketId,
 						onSettleTicket: handleSettleTicket,
 						onDeleteTicket: handleDeleteTicket,
 						onResetDemoHistory: handleResetDemoHistory,

@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Bell,
+  BellOff,
+  BellRing,
   Check,
   Clock,
   Database,
@@ -8,8 +11,17 @@ import {
   Shield,
   Smartphone,
 } from 'lucide-react';
-import { AppSettings } from '../types/betting';
-import { formatUpdateTimeLabel } from '../utils/analyticsEngine';
+import { AppSettings, NotificationLeadMinutes } from '../types/betting';
+import {
+  formatUpdateTimeLabel,
+  parseAmountInput,
+  sanitizeIntegerInput,
+} from '../utils/analyticsEngine';
+import {
+  BrowserNotificationPermission,
+  getBrowserNotificationPermission,
+  requestBrowserNotificationPermission,
+} from '../services/ticketNotificationService';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface SettingsViewProps {
@@ -36,56 +48,89 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
   const [geminiKey, setGeminiKey] = useState((settings.geminiApiKey ?? '').trim());
-  const [bankroll, setBankroll] = useState<number>(settings.initialBankroll);
+  const [bankrollInput, setBankrollInput] = useState<string>(() =>
+    String(Math.max(5, Math.round(settings.initialBankroll)))
+  );
   const [demoMode, setDemoMode] = useState(settings.demoMode);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    Boolean(settings.notificationsEnabled)
+  );
+  const [notificationLeadMinutes, setNotificationLeadMinutes] = useState<NotificationLeadMinutes>(
+    settings.notificationLeadMinutes === 0 ? 0 : 15
+  );
+  const [permissionState, setPermissionState] = useState<BrowserNotificationPermission>(() =>
+    getBrowserNotificationPermission()
+  );
   const [savedNotice, setSavedNotice] = useState(false);
 
   useEffect(() => {
     setOddsKey(settings.theOddsApiKey);
     setSportsKey(settings.apiSportsKey);
     setGeminiKey((settings.geminiApiKey ?? '').trim());
-    setBankroll(settings.initialBankroll);
+    setBankrollInput(String(Math.max(5, Math.round(settings.initialBankroll))));
     setDemoMode(settings.demoMode);
+    setNotificationsEnabled(Boolean(settings.notificationsEnabled));
+    setNotificationLeadMinutes(settings.notificationLeadMinutes === 0 ? 0 : 15);
+    setPermissionState(getBrowserNotificationPermission());
   }, [settings]);
+
+  const buildCurrentSettings = (overrides: Partial<AppSettings> = {}): AppSettings => {
+    const safeBankroll = parseAmountInput(bankrollInput, settings.initialBankroll, 5);
+    return {
+      theOddsApiKey: oddsKey.trim(),
+      apiSportsKey: sportsKey.trim(),
+      geminiApiKey: geminiKey.trim(),
+      demoMode,
+      initialBankroll: safeBankroll,
+      notificationsEnabled,
+      notificationLeadMinutes,
+      ...overrides,
+    };
+  };
+
+  const handleToggleNotifications = async () => {
+    const nextEnabled = !notificationsEnabled;
+    if (nextEnabled) {
+      const perm = await requestBrowserNotificationPermission();
+      setPermissionState(perm);
+      if (perm === 'denied' || perm === 'unsupported') {
+        setNotificationsEnabled(false);
+        onUpdateSettings(buildCurrentSettings({ notificationsEnabled: false }));
+        return;
+      }
+      setNotificationsEnabled(true);
+      onUpdateSettings(buildCurrentSettings({ notificationsEnabled: true }));
+      return;
+    }
+
+    setNotificationsEnabled(false);
+    onUpdateSettings(buildCurrentSettings({ notificationsEnabled: false }));
+  };
+
+  const handleSelectLeadMinutes = (lead: NotificationLeadMinutes) => {
+    setNotificationLeadMinutes(lead);
+    onUpdateSettings(buildCurrentSettings({ notificationLeadMinutes: lead }));
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedOdds = oddsKey.trim();
-    const trimmedSports = sportsKey.trim();
-    const trimmedGemini = geminiKey.trim();
-    const safeBankroll = Math.max(5, Math.round(bankroll || 5));
-    setBankroll(safeBankroll);
-
-    onUpdateSettings({
-      theOddsApiKey: trimmedOdds,
-      apiSportsKey: trimmedSports,
-      geminiApiKey: trimmedGemini,
-      demoMode,
-      initialBankroll: safeBankroll,
-    });
+    const next = buildCurrentSettings();
+    setBankrollInput(String(next.initialBankroll));
+    onUpdateSettings(next);
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
 
-    if (!demoMode && trimmedOdds !== settings.theOddsApiKey.trim()) {
-      await onFetchLiveData(trimmedOdds, trimmedSports, false);
+    if (!next.demoMode && next.theOddsApiKey !== settings.theOddsApiKey.trim()) {
+      await onFetchLiveData(next.theOddsApiKey, next.apiSportsKey, false);
     }
   };
 
   const handleTestAndLoad = async () => {
-    const trimmedOdds = oddsKey.trim();
-    const trimmedSports = sportsKey.trim();
-    const trimmedGemini = geminiKey.trim();
-    const safeBankroll = Math.max(5, Math.round(bankroll || 5));
-    setBankroll(safeBankroll);
     setDemoMode(false);
-    onUpdateSettings({
-      theOddsApiKey: trimmedOdds,
-      apiSportsKey: trimmedSports,
-      geminiApiKey: trimmedGemini,
-      demoMode: false,
-      initialBankroll: safeBankroll,
-    });
-    await onFetchLiveData(trimmedOdds, trimmedSports, true);
+    const next = buildCurrentSettings({ demoMode: false });
+    setBankrollInput(String(next.initialBankroll));
+    onUpdateSettings(next);
+    await onFetchLiveData(next.theOddsApiKey, next.apiSportsKey, true);
   };
 
   const parsedQuota = remainingQuota !== null ? Number(remainingQuota) : null;
@@ -147,13 +192,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               onClick={() => {
                 const next = !demoMode;
                 setDemoMode(next);
-                onUpdateSettings({
-                  theOddsApiKey: oddsKey.trim(),
-                  apiSportsKey: sportsKey.trim(),
-                  geminiApiKey: geminiKey.trim(),
-                  demoMode: next,
-                  initialBankroll: Math.max(5, Math.round(bankroll || 5)),
-                });
+                onUpdateSettings(buildCurrentSettings({ demoMode: next }));
               }}
               className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${
                 demoMode
@@ -167,6 +206,97 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 }`}
               />
             </button>
+          </div>
+
+          {/* Browser Notifications Toggle & Lead Time */}
+          <div className="space-y-3 rounded-xl border border-slate-800/80 bg-[#0B101B] p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-emerald-400">
+                  {permissionState === 'denied' || permissionState === 'unsupported' ? (
+                    <BellOff className="h-4 w-4 text-rose-400" />
+                  ) : notificationsEnabled && permissionState === 'granted' ? (
+                    <BellRing className="h-4 w-4 text-emerald-400" />
+                  ) : (
+                    <Bell className="h-4 w-4 text-slate-400" />
+                  )}
+                </div>
+                <div>
+                  <span className="block text-sm font-semibold text-slate-100">
+                    Oznámení (začátek zápasu a výhry)
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-400">
+                    Systémové upozornění pouze pro uložené aktivní tikety a výhry (při prohře úplné ticho).
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notificationsEnabled && permissionState === 'granted'}
+                aria-label="Oznámení (začátek zápasu a výhry)"
+                onClick={() => void handleToggleNotifications()}
+                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${
+                  notificationsEnabled && permissionState === 'granted'
+                    ? 'border-emerald-500 bg-emerald-500'
+                    : 'border-slate-700 bg-slate-800'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                    notificationsEnabled && permissionState === 'granted'
+                      ? 'translate-x-6'
+                      : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3">
+              <span className="text-xs font-medium text-slate-300">Kdy upozornit před zápasem:</span>
+              <div
+                role="radiogroup"
+                aria-label="Čas upozornění před začátkem"
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1"
+              >
+                {(
+                  [
+                    { value: 15, label: '15 min předem' },
+                    { value: 0, label: 'Přesně při začátku' },
+                  ] as const
+                ).map((opt) => {
+                  const selected = notificationLeadMinutes === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => handleSelectLeadMinutes(opt.value)}
+                      className={`min-h-[34px] rounded-lg px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
+                        selected
+                          ? 'bg-emerald-500 text-slate-950 font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {permissionState === 'denied' && (
+              <p className="text-xs text-rose-300">
+                Oprávnění k oznámením je v prohlížeči zablokováno. Povolte notifikace v nastavení stránky.
+              </p>
+            )}
+            {permissionState === 'unsupported' && (
+              <p className="text-xs text-amber-300">
+                Tento prohlížeč nebo prostředí nepodporuje Web Notifications API.
+              </p>
+            )}
           </div>
 
           {/* The Odds API Key */}
@@ -253,13 +383,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </label>
             <input
               id="initial-bankroll"
-              type="number"
-              min={5}
-              step={5}
-              value={bankroll}
-              onChange={(e) => setBankroll(Number(e.target.value))}
-              onBlur={() => setBankroll((b) => Math.max(5, Math.round(b || 5)))}
-              className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-base font-bold tabular-nums text-slate-100 focus:border-emerald-500/60 focus:outline-none"
+              type="text"
+              inputMode="numeric"
+              placeholder="0"
+              value={bankrollInput}
+              onChange={(e) => setBankrollInput(sanitizeIntegerInput(e.target.value))}
+              className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
 
