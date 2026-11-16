@@ -13,7 +13,12 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { MatchAnalysis, SportFilter, TicketLeg, TimeWindow } from '../types/betting';
-import { BETANO_HOME_URL, formatOdds, formatPercent } from '../utils/analyticsEngine';
+import {
+  BETANO_HOME_URL,
+  formatOdds,
+  formatPercent,
+  isSuspiciousValueMatch,
+} from '../utils/analyticsEngine';
 import {
   fetchSingleMatchReasoning,
   loadCachedMatchReasons,
@@ -59,7 +64,7 @@ const SORT_OPTIONS: { id: SortMode; label: string }[] = [
 ];
 
 function isMatchPositiveValue(m: MatchAnalysis): boolean {
-  return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0;
+  return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0 && !isSuspiciousValueMatch(m);
 }
 
 function getKickoffTimestamp(m: MatchAnalysis): number {
@@ -493,6 +498,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
       ) : (
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {filteredMatches.map((match) => {
+            const isSuspiciousValue = isSuspiciousValueMatch(match);
             const isPositiveValue = isMatchPositiveValue(match);
             const isSelected = selectedMatchIds.includes(match.id);
 
@@ -500,7 +506,9 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               <article
                 key={match.id}
                 className={`flex flex-col justify-between rounded-2xl border bg-[#111827] p-4 transition-colors ${
-                  isPositiveValue
+                  isSuspiciousValue
+                    ? 'border-amber-500/55 hover:border-amber-400/75'
+                    : isPositiveValue
                     ? 'border-emerald-500/40 hover:border-emerald-500/60'
                     : 'border-slate-800/90 hover:border-slate-700'
                 }`}
@@ -519,10 +527,16 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     <div className="flex items-center gap-2">
                       <span
                         className={`font-mono text-xs font-bold tabular-nums ${
-                          isPositiveValue ? 'text-emerald-400' : 'text-slate-400'
+                          isSuspiciousValue
+                            ? 'text-amber-300'
+                            : isPositiveValue
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
                         }`}
                       >
-                        {isPositiveValue
+                        {isSuspiciousValue
+                          ? 'Podezřelá odchylka '
+                          : isPositiveValue
                           ? 'Value Bet '
                           : match.isCustom && match.valueScore === 0
                           ? 'Vlastní · Value '
@@ -554,6 +568,15 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       <span className="font-semibold text-emerald-300">{match.recommendedPick}</span>
                     </p>
                   </div>
+
+                  {isSuspiciousValue && (
+                    <div
+                      role="alert"
+                      className="mt-2.5 rounded-xl border border-amber-400/60 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-200"
+                    >
+                      ⚠️ Ověř typ trhu na Betanu (zákl. doba vs. do rozhodnutí)
+                    </div>
+                  )}
 
                   {/* Factual Odds & Probability Strip (No simulated form or H2H) */}
                   <div className="mt-3 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2">

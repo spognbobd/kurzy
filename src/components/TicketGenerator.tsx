@@ -31,6 +31,7 @@ import {
   formatOdds,
   formatPercent,
   generateOptimalTicket,
+  isSuspiciousValueMatch,
   parseAmountInput,
   sanitizeIntegerInput,
 } from '../utils/analyticsEngine';
@@ -157,7 +158,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   onDeleteCustomMatch,
 }) => {
   const recommendedMinProb = useMemo(() => {
-    const validValueMatches = matches.filter((m) => m.valueScore >= 0);
+    const validValueMatches = matches.filter(
+      (m) => m.valueScore >= 0 && !isSuspiciousValueMatch(m)
+    );
     if (validValueMatches.length === 0) return 55;
     const sorted = [...validValueMatches].sort((a, b) => b.aiProbability - a.aiProbability);
     const refIndex = Math.min(2, sorted.length - 1);
@@ -235,7 +238,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       counts.set(s, { totalNonNeg: 0, eligible: 0 });
     }
     for (const m of matches) {
-      if (m.valueScore < 0) continue;
+      if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
       const entry = counts.get(m.sport);
       if (!entry) continue;
       entry.totalNonNeg += 1;
@@ -296,13 +299,20 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
         (m) =>
           selectedSports.includes(m.sport) &&
           m.aiProbability >= minMatchProbability &&
-          m.valueScore >= 0
+          m.valueScore >= 0 &&
+          !isSuspiciousValueMatch(m)
       ).length,
     [matches, selectedSports, minMatchProbability]
   );
 
   const nonNegativeSportMatchesCount = useMemo(
-    () => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0).length,
+    () =>
+      matches.filter(
+        (m) =>
+          selectedSports.includes(m.sport) &&
+          m.valueScore >= 0 &&
+          !isSuspiciousValueMatch(m)
+      ).length,
     [matches, selectedSports]
   );
 

@@ -8,6 +8,12 @@ import {
   TicketStyle,
 } from '../types/betting';
 
+export const MAX_SAFE_VALUE_SCORE = 15.0;
+
+export function isSuspiciousValueMatch(match: Pick<MatchAnalysis, 'valueScore'>): boolean {
+  return Number(match.valueScore.toFixed(1)) > MAX_SAFE_VALUE_SCORE;
+}
+
 export function sanitizeIntegerInput(raw: string): string {
   const digitsOnly = raw.replace(/\D+/g, '');
   if (digitsOnly === '') return '';
@@ -412,7 +418,10 @@ export function generateOptimalTicket(
 
   const sportPool = matches.filter((m) => selectedSports.includes(m.sport));
   const eligible = sportPool.filter(
-    (m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0
+    (m) =>
+      m.aiProbability >= minMatchProbability &&
+      m.valueScore >= 0 &&
+      !isSuspiciousValueMatch(m)
   );
   if (eligible.length === 0) return null;
 

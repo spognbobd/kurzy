@@ -508,30 +508,83 @@ export async function fetchLiveOddsAndStats(
     const league = mapLeagueName(ev.sport_key, ev.sport_title);
     const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
 
-    // Collect home and away odds across bookmakers
-    const homePrices: number[] = [];
-    const awayPrices: number[] = [];
-    let betanoHome: number | null = null;
-    let tipsportHome: number | null = null;
-    let betanoAway: number | null = null;
-    let tipsportAway: number | null = null;
+    // Strictly group bookmaker prices by exact market.key AND market arity (2way vs 3way),
+    // so 3-way regulation markets (1X2) are NEVER mixed with 2-way Moneyline markets.
+    type BucketEntry = {
+      bookmakerKey: string;
+      homePrice: number;
+      awayPrice: number;
+    };
+    type MarketBucket = {
+      marketKey: string;
+      arity: '2way' | '3way';
+      entries: BucketEntry[];
+    };
+
+    const buckets = new Map<string, MarketBucket>();
 
     for (const bm of ev.bookmakers) {
-      const h2h = bm.markets.find((m) => m.key === 'h2h');
-      if (!h2h) continue;
-      const homeOut = h2h.outcomes.find((o) => o.name === ev.home_team);
-      const awayOut = h2h.outcomes.find((o) => o.name === ev.away_team);
-      if (homeOut && homeOut.price > 1.05) {
-        homePrices.push(homeOut.price);
-        if (bm.key.includes('betano')) betanoHome = homeOut.price;
-        if (bm.key.includes('tipsport')) tipsportHome = homeOut.price;
-      }
-      if (awayOut && awayOut.price > 1.05) {
-        awayPrices.push(awayOut.price);
-        if (bm.key.includes('betano')) betanoAway = awayOut.price;
-        if (bm.key.includes('tipsport')) tipsportAway = awayOut.price;
+      for (const market of bm.markets) {
+        if (market.key !== 'h2h' && market.key !== 'h2h_3_way') continue;
+
+        const homeOut = market.outcomes.find((o) => o.name === ev.home_team);
+        const awayOut = market.outcomes.find((o) => o.name === ev.away_team);
+        if (!homeOut || !awayOut || !(homeOut.price > 1.05) || !(awayOut.price > 1.05)) {
+          continue;
+        }
+
+        const drawOut = market.outcomes.find((o) => o.name.toLowerCase() === 'draw');
+        const hasThreeOutcomes = market.outcomes.length >= 3 || Boolean(drawOut);
+
+        if (market.key === 'h2h_3_way' && !hasThreeOutcomes) continue;
+        if (!hasThreeOutcomes && market.outcomes.length !== 2) continue;
+        if (hasThreeOutcomes && drawOut && !(drawOut.price > 1.05)) continue;
+
+        const arity: '2way' | '3way' = hasThreeOutcomes ? '3way' : '2way';
+        const bucketId = `${market.key}:${arity}`;
+        let bucket = buckets.get(bucketId);
+        if (!bucket) {
+          bucket = { marketKey: market.key, arity, entries: [] };
+          buckets.set(bucketId, bucket);
+        }
+        bucket.entries.push({
+          bookmakerKey: bm.key.toLowerCase(),
+          homePrice: homeOut.price,
+          awayPrice: awayOut.price,
+        });
       }
     }
+
+    const allBuckets = Array.from(buckets.values()).filter((b) => b.entries.length > 0);
+    if (allBuckets.length === 0) continue;
+
+    // Prefer buckets with at least 2 bookmakers of the exact same market type so Betano is never compared alone or cross-market
+    const multiBookmakerBuckets = allBuckets.filter((b) => b.entries.length >= 2);
+    const candidateBuckets = multiBookmakerBuckets.length > 0 ? multiBookmakerBuckets : allBuckets;
+
+    const preferredArity: '2way' | '3way' = sport === 'Fotbal' ? '3way' : '2way';
+    candidateBuckets.sort((a, b) => {
+      const aHasBetano = a.entries.some((e) => e.bookmakerKey.includes('betano')) ? 1 : 0;
+      const bHasBetano = b.entries.some((e) => e.bookmakerKey.includes('betano')) ? 1 : 0;
+      if (bHasBetano !== aHasBetano) return bHasBetano - aHasBetano;
+
+      const aPref = a.arity === preferredArity ? 1 : 0;
+      const bPref = b.arity === preferredArity ? 1 : 0;
+      if (bPref !== aPref) return bPref - aPref;
+
+      return b.entries.length - a.entries.length;
+    });
+
+    const selectedBucket = candidateBuckets[0];
+    const homePrices = selectedBucket.entries.map((e) => e.homePrice);
+    const awayPrices = selectedBucket.entries.map((e) => e.awayPrice);
+    const betanoEntry = selectedBucket.entries.find((e) => e.bookmakerKey.includes('betano'));
+    const tipsportEntry = selectedBucket.entries.find((e) => e.bookmakerKey.includes('tipsport'));
+
+    const betanoHome = betanoEntry?.homePrice ?? null;
+    const betanoAway = betanoEntry?.awayPrice ?? null;
+    const tipsportHome = tipsportEntry?.homePrice ?? null;
+    const tipsportAway = tipsportEntry?.awayPrice ?? null;
 
     if (homePrices.length === 0 || awayPrices.length === 0) continue;
 
@@ -590,6 +643,12 @@ export async function fetchLiveOddsAndStats(
 
     const pickedTeam = pickSide === 'home' ? ev.home_team : ev.away_team;
     const spreadPct = (((betanoOdds - marketAvg) / marketAvg) * 100).toFixed(1);
+    const marketLabel =
+      selectedBucket.arity === '3way'
+        ? 'Výsledek v zákl. době (1X2)'
+        : sport === 'Hokej' || sport === 'Basketbal'
+        ? 'Vítěz zápasu (do rozhodnutí)'
+        : 'Vítěz zápasu (H2H)';
 
     analyzed.push({
       id: `live-${ev.id}`,
@@ -601,7 +660,9 @@ export async function fetchLiveOddsAndStats(
       homeTeam: ev.home_team,
       awayTeam: ev.away_team,
       recommendedPick: `Výhra ${pickedTeam}`,
-      marketLabel: 'Vítěz zápasu (H2H)',
+      marketLabel,
+      marketKey: selectedBucket.marketKey,
+      marketArity: selectedBucket.arity,
       odds: {
         betano: betanoOdds,
         tipsport: tipsportOdds,
@@ -616,11 +677,11 @@ export async function fetchLiveOddsAndStats(
       aiProbability: model.aiProbability,
       impliedProbability: model.impliedProbability,
       valueScore: model.valueScore,
-      reasoning: `Živá analýza z The Odds API (${ev.bookmakers.length} kanceláří). Kurz ${betanoOdds.toFixed(
+      reasoning: `Živá analýza z The Odds API (${selectedBucket.entries.length} kanceláří, trh ${selectedBucket.marketKey} ${selectedBucket.arity}). Kurz ${betanoOdds.toFixed(
         2
       )} vykazuje odchylku ${Number(spreadPct) >= 0 ? '+' : ''}${spreadPct} % oproti průměru trhu (${marketAvg.toFixed(
         2
-      )}) při formě ${finalFormHome.join('-')} vs. ${finalFormAway.join('-')}.`,
+      )}).`,
       isLiveApi: true,
     });
   }

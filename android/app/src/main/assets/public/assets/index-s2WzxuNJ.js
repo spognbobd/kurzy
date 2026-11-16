@@ -11628,7 +11628,9 @@ function registerSW(options = {}) {
 	registerPromise = register();
 	return updateServiceWorker;
 }
-// src/utils/analyticsEngine.ts
+function isSuspiciousValueMatch(match) {
+	return Number(match.valueScore.toFixed(1)) > 15;
+}
 function sanitizeIntegerInput(raw) {
 	const digitsOnly = raw.replace(/\D+/g, "");
 	if (digitsOnly === "") return "";
@@ -11874,7 +11876,7 @@ function toLeg(m) {
 function generateOptimalTicket(matches, selectedSports, ticketStyle, budget, variationIndex = 0, options = {}) {
 	const minMatchProbability = Math.min(85, Math.max(25, options.minMatchProbability ?? 55));
 	const requestedExactLegs = typeof options.exactLegsCount === "number" && options.exactLegsCount >= 1 && options.exactLegsCount <= 4 ? Math.round(options.exactLegsCount) : null;
-	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0);
+	const eligible = matches.filter((m) => selectedSports.includes(m.sport)).filter((m) => m.aiProbability >= minMatchProbability && m.valueScore >= 0 && !isSuspiciousValueMatch(m));
 	if (eligible.length === 0) return null;
 	const isLowProbCapped = requestedExactLegs === null && ticketStyle === "smart_value" && minMatchProbability < 45;
 	let candidatePool;
@@ -13228,28 +13230,57 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 		if (BLOCKED_GENERAL_REGEX.test(evNormalized) || sport === "MMA" && BLOCKED_MMA_REGEX.test(evNormalized) || sport === "Tenis" && BLOCKED_TENNIS_REGEX.test(evNormalized)) continue;
 		const league = mapLeagueName(ev.sport_key, ev.sport_title);
 		const { label: kickoffTime, timeWindow } = formatCzechKickoff(ev.commence_time);
-		const homePrices = [];
-		const awayPrices = [];
-		let betanoHome = null;
-		let tipsportHome = null;
-		let betanoAway = null;
-		let tipsportAway = null;
-		for (const bm of ev.bookmakers) {
-			const h2h = bm.markets.find((m) => m.key === "h2h");
-			if (!h2h) continue;
-			const homeOut = h2h.outcomes.find((o) => o.name === ev.home_team);
-			const awayOut = h2h.outcomes.find((o) => o.name === ev.away_team);
-			if (homeOut && homeOut.price > 1.05) {
-				homePrices.push(homeOut.price);
-				if (bm.key.includes("betano")) betanoHome = homeOut.price;
-				if (bm.key.includes("tipsport")) tipsportHome = homeOut.price;
+		const buckets = /* @__PURE__ */ new Map();
+		for (const bm of ev.bookmakers) for (const market of bm.markets) {
+			if (market.key !== "h2h" && market.key !== "h2h_3_way") continue;
+			const homeOut = market.outcomes.find((o) => o.name === ev.home_team);
+			const awayOut = market.outcomes.find((o) => o.name === ev.away_team);
+			if (!homeOut || !awayOut || !(homeOut.price > 1.05) || !(awayOut.price > 1.05)) continue;
+			const drawOut = market.outcomes.find((o) => o.name.toLowerCase() === "draw");
+			const hasThreeOutcomes = market.outcomes.length >= 3 || Boolean(drawOut);
+			if (market.key === "h2h_3_way" && !hasThreeOutcomes) continue;
+			if (!hasThreeOutcomes && market.outcomes.length !== 2) continue;
+			if (hasThreeOutcomes && drawOut && !(drawOut.price > 1.05)) continue;
+			const arity = hasThreeOutcomes ? "3way" : "2way";
+			const bucketId = `${market.key}:${arity}`;
+			let bucket = buckets.get(bucketId);
+			if (!bucket) {
+				bucket = {
+					marketKey: market.key,
+					arity,
+					entries: []
+				};
+				buckets.set(bucketId, bucket);
 			}
-			if (awayOut && awayOut.price > 1.05) {
-				awayPrices.push(awayOut.price);
-				if (bm.key.includes("betano")) betanoAway = awayOut.price;
-				if (bm.key.includes("tipsport")) tipsportAway = awayOut.price;
-			}
+			bucket.entries.push({
+				bookmakerKey: bm.key.toLowerCase(),
+				homePrice: homeOut.price,
+				awayPrice: awayOut.price
+			});
 		}
+		const allBuckets = Array.from(buckets.values()).filter((b) => b.entries.length > 0);
+		if (allBuckets.length === 0) continue;
+		const multiBookmakerBuckets = allBuckets.filter((b) => b.entries.length >= 2);
+		const candidateBuckets = multiBookmakerBuckets.length > 0 ? multiBookmakerBuckets : allBuckets;
+		const preferredArity = sport === "Fotbal" ? "3way" : "2way";
+		candidateBuckets.sort((a, b) => {
+			const aHasBetano = a.entries.some((e) => e.bookmakerKey.includes("betano")) ? 1 : 0;
+			const bHasBetano = b.entries.some((e) => e.bookmakerKey.includes("betano")) ? 1 : 0;
+			if (bHasBetano !== aHasBetano) return bHasBetano - aHasBetano;
+			const aPref = a.arity === preferredArity ? 1 : 0;
+			const bPref = b.arity === preferredArity ? 1 : 0;
+			if (bPref !== aPref) return bPref - aPref;
+			return b.entries.length - a.entries.length;
+		});
+		const selectedBucket = candidateBuckets[0];
+		const homePrices = selectedBucket.entries.map((e) => e.homePrice);
+		const awayPrices = selectedBucket.entries.map((e) => e.awayPrice);
+		const betanoEntry = selectedBucket.entries.find((e) => e.bookmakerKey.includes("betano"));
+		const tipsportEntry = selectedBucket.entries.find((e) => e.bookmakerKey.includes("tipsport"));
+		const betanoHome = betanoEntry?.homePrice ?? null;
+		const betanoAway = betanoEntry?.awayPrice ?? null;
+		const tipsportHome = tipsportEntry?.homePrice ?? null;
+		const tipsportAway = tipsportEntry?.awayPrice ?? null;
 		if (homePrices.length === 0 || awayPrices.length === 0) continue;
 		const avgHome = homePrices.reduce((a, b) => a + b, 0) / homePrices.length;
 		const avgAway = awayPrices.reduce((a, b) => a + b, 0) / awayPrices.length;
@@ -13287,6 +13318,7 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 		});
 		const pickedTeam = pickSide === "home" ? ev.home_team : ev.away_team;
 		const spreadPct = ((betanoOdds - marketAvg) / marketAvg * 100).toFixed(1);
+		const marketLabel = selectedBucket.arity === "3way" ? "Výsledek v zákl. době (1X2)" : sport === "Hokej" || sport === "Basketbal" ? "Vítěz zápasu (do rozhodnutí)" : "Vítěz zápasu (H2H)";
 		analyzed.push({
 			id: `live-${ev.id}`,
 			sport,
@@ -13297,7 +13329,9 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 			homeTeam: ev.home_team,
 			awayTeam: ev.away_team,
 			recommendedPick: `Výhra ${pickedTeam}`,
-			marketLabel: "Vítěz zápasu (H2H)",
+			marketLabel,
+			marketKey: selectedBucket.marketKey,
+			marketArity: selectedBucket.arity,
 			odds: {
 				betano: betanoOdds,
 				tipsport: tipsportOdds,
@@ -13312,7 +13346,7 @@ async function fetchLiveOddsAndStats(theOddsApiKey, apiSportsKey) {
 			aiProbability: model.aiProbability,
 			impliedProbability: model.impliedProbability,
 			valueScore: model.valueScore,
-			reasoning: `Živá analýza z The Odds API (${ev.bookmakers.length} kanceláří). Kurz ${betanoOdds.toFixed(2)} vykazuje odchylku ${Number(spreadPct) >= 0 ? "+" : ""}${spreadPct} % oproti průměru trhu (${marketAvg.toFixed(2)}) při formě ${finalFormHome.join("-")} vs. ${finalFormAway.join("-")}.`,
+			reasoning: `Živá analýza z The Odds API (${selectedBucket.entries.length} kanceláří, trh ${selectedBucket.marketKey} ${selectedBucket.arity}). Kurz ${betanoOdds.toFixed(2)} vykazuje odchylku ${Number(spreadPct) >= 0 ? "+" : ""}${spreadPct} % oproti průměru trhu (${marketAvg.toFixed(2)}).`,
 			isLiveApi: true
 		});
 	}
@@ -14674,7 +14708,7 @@ var SORT_OPTIONS = [
 	}
 ];
 function isMatchPositiveValue(m) {
-	return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0;
+	return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0 && !isSuspiciousValueMatch(m);
 }
 function getKickoffTimestamp(m) {
 	const parsed = Date.parse(m.kickoffIso);
@@ -15010,10 +15044,11 @@ var MatchFeed = ({ matches, selectedMatchIds, geminiApiKey, onToggleMatchOnSlip,
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 				className: "grid grid-cols-1 gap-3 xl:grid-cols-2",
 				children: filteredMatches.map((match) => {
+					const isSuspiciousValue = isSuspiciousValueMatch(match);
 					const isPositiveValue = isMatchPositiveValue(match);
 					const isSelected = selectedMatchIds.includes(match.id);
 					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-						className: `flex flex-col justify-between rounded-2xl border bg-[#111827] p-4 transition-colors ${isPositiveValue ? "border-emerald-500/40 hover:border-emerald-500/60" : "border-slate-800/90 hover:border-slate-700"}`,
+						className: `flex flex-col justify-between rounded-2xl border bg-[#111827] p-4 transition-colors ${isSuspiciousValue ? "border-amber-500/55 hover:border-amber-400/75" : isPositiveValue ? "border-emerald-500/40 hover:border-emerald-500/60" : "border-slate-800/90 hover:border-slate-700"}`,
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "flex flex-wrap items-center justify-between gap-2 text-xs",
@@ -15041,8 +15076,8 @@ var MatchFeed = ({ matches, selectedMatchIds, geminiApiKey, onToggleMatchOnSlip,
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "flex items-center gap-2",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-										className: `font-mono text-xs font-bold tabular-nums ${isPositiveValue ? "text-emerald-400" : "text-slate-400"}`,
-										children: [isPositiveValue ? "Value Bet " : match.isCustom && match.valueScore === 0 ? "Vlastní · Value " : "Bez výhody ", formatPercent(match.valueScore, true)]
+										className: `font-mono text-xs font-bold tabular-nums ${isSuspiciousValue ? "text-amber-300" : isPositiveValue ? "text-emerald-400" : "text-slate-400"}`,
+										children: [isSuspiciousValue ? "Podezřelá odchylka " : isPositiveValue ? "Value Bet " : match.isCustom && match.valueScore === 0 ? "Vlastní · Value " : "Bez výhody ", formatPercent(match.valueScore, true)]
 									}), match.isCustom && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 										type: "button",
 										onClick: () => onDeleteCustomMatch(match.id),
@@ -15081,6 +15116,11 @@ var MatchFeed = ({ matches, selectedMatchIds, geminiApiKey, onToggleMatchOnSlip,
 										})
 									]
 								})]
+							}),
+							isSuspiciousValue && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								role: "alert",
+								className: "mt-2.5 rounded-xl border border-amber-400/60 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-200",
+								children: "⚠️ Ověř typ trhu na Betanu (zákl. doba vs. do rozhodnutí)"
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "mt-3 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2",
@@ -15267,7 +15307,7 @@ function renderFormattedGeminiReasoning(text) {
 }
 var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, onOpenBetano, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const recommendedMinProb = (0, import_react.useMemo)(() => {
-		const validValueMatches = matches.filter((m) => m.valueScore >= 0);
+		const validValueMatches = matches.filter((m) => m.valueScore >= 0 && !isSuspiciousValueMatch(m));
 		if (validValueMatches.length === 0) return 55;
 		const sorted = [...validValueMatches].sort((a, b) => b.aiProbability - a.aiProbability);
 		const refProb = sorted[Math.min(2, sorted.length - 1)].aiProbability;
@@ -15321,7 +15361,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			eligible: 0
 		});
 		for (const m of matches) {
-			if (m.valueScore < 0) continue;
+			if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
 			const entry = counts.get(m.sport);
 			if (!entry) continue;
 			entry.totalNonNeg += 1;
@@ -15385,12 +15425,12 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			[matchId]: false
 		}));
 	};
-	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length, [
+	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [
 		matches,
 		selectedSports,
 		minMatchProbability
 	]);
-	const nonNegativeSportMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0).length, [matches, selectedSports]);
+	const nonNegativeSportMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [matches, selectedSports]);
 	const toggleSport = (sport) => {
 		setSelectedSports((prev) => {
 			if (prev.includes(sport)) {

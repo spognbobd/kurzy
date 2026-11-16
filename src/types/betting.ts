@@ -46,6 +46,8 @@ export interface MatchAnalysis {
   isLiveApi?: boolean;
   isCustom?: boolean;
   bookmakerMarginPct?: number;
+  marketKey?: string;
+  marketArity?: '2way' | '3way';
 }
 
 export interface TicketLeg {
