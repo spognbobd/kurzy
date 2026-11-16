@@ -11844,7 +11844,12 @@ function toLeg(m) {
 		marketLabel: m.marketLabel,
 		betanoOdds: m.odds.betano,
 		aiProbability: m.aiProbability,
-		valueScore: m.valueScore
+		valueScore: m.valueScore,
+		marketAvgOdds: m.odds.marketAvg,
+		formHome: m.formHome,
+		formAway: m.formAway,
+		h2hSummary: m.h2hSummary,
+		reasoning: m.reasoning
 	};
 }
 /**
@@ -14885,6 +14890,69 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 		]
 	});
 };
+// src/services/geminiReasoningService.ts
+var SESSION_CACHE_KEY = "betedge_gemini_leg_reasons_v1";
+function getLegReasonCacheKey(leg) {
+	return `${leg.matchId}::${leg.recommendedPick}::${leg.betanoOdds.toFixed(2)}`;
+}
+function loadCachedLegReasons() {
+	if (typeof window === "undefined") return {};
+	try {
+		const raw = window.sessionStorage.getItem(SESSION_CACHE_KEY);
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		if (parsed && typeof parsed === "object") return parsed;
+		return {};
+	} catch {
+		return {};
+	}
+}
+function saveCachedLegReasons(reasons) {
+	if (typeof window === "undefined") return;
+	try {
+		window.sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(reasons));
+	} catch {}
+}
+async function fetchTicketLegsReasoning(legs, signal) {
+	const response = await fetch("/api/gemini/ticket-reasoning", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		signal,
+		body: JSON.stringify({ legs: legs.map((leg) => ({
+			matchId: leg.matchId,
+			sport: leg.sport,
+			league: leg.league,
+			homeTeam: leg.homeTeam,
+			awayTeam: leg.awayTeam,
+			kickoffTime: leg.kickoffTime,
+			recommendedPick: leg.recommendedPick,
+			marketLabel: leg.marketLabel,
+			betanoOdds: leg.betanoOdds,
+			marketAvgOdds: leg.marketAvgOdds,
+			aiProbability: leg.aiProbability,
+			valueScore: leg.valueScore,
+			formHome: leg.formHome,
+			formAway: leg.formAway,
+			h2hSummary: leg.h2hSummary
+		})) })
+	});
+	if (!(response.headers.get("content-type") || "").includes("application/json")) throw new Error("Serverová Gemini AI služba není v tomto prostředí dostupná.");
+	const data = await response.json();
+	if (!response.ok) throw new Error(data.error || `Chyba Gemini API (${response.status}).`);
+	return {
+		reasons: data.reasons ?? {},
+		grounded: Boolean(data.grounded),
+		model: data.model ?? "gemini-4-hydrogen"
+	};
+}
+function buildLocalFallbackReasoning(leg) {
+	const formHome = leg.formHome?.join("-") ?? "stabilní";
+	const formAway = leg.formAway?.join("-") ?? "kolísavá";
+	const marketAvg = leg.marketAvgOdds ?? leg.betanoOdds;
+	const valueText = leg.valueScore > 0 ? `nabízí kladné Value +${leg.valueScore.toFixed(1).replace(".", ",")} % oproti tržnímu průměru ${marketAvg.toFixed(2)}` : `odpovídá férové hladině trhu (${marketAvg.toFixed(2)})`;
+	const venueNote = leg.sport === "Tenis" || leg.sport === "MMA" ? "Výkonnostní profil a aktuální herní pohoda hrají ve prospěch zvoleného tipu." : `Domácí prostředí pro ${leg.homeTeam} a vzájemná bilance (${leg.h2hSummary || "vyrovnaná"}) podporují výsledek bez nutnosti riskovat.`;
+	return `Aktuální bilance posledních 5 zápasů ukazuje formu ${formHome} (${leg.homeTeam}) proti ${formAway} (${leg.awayTeam}), bez potvrzených mimořádných absencí v dostupných statistikách. ${venueNote} Betano kurz ${leg.betanoOdds.toFixed(2)} při odhadované šanci ${leg.aiProbability.toFixed(1).replace(".", ",")} % ${valueText}.`;
+}
 // src/components/TicketGenerator.tsx
 var ALL_SPORTS = [
 	"Fotbal",
@@ -14966,6 +15034,10 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 	const [variationIndex, setVariationIndex] = (0, import_react.useState)(0);
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
+	const [aiReasons, setAiReasons] = (0, import_react.useState)(() => loadCachedLegReasons());
+	const [loadingReasonKeys, setLoadingReasonKeys] = (0, import_react.useState)({});
+	const [aiError, setAiError] = (0, import_react.useState)(null);
+	const [aiRefreshNonce, setAiRefreshNonce] = (0, import_react.useState)(0);
 	(0, import_react.useEffect)(() => {
 		setMinMatchProbability(recommendedMinProb);
 		setVariationIndex(0);
@@ -14983,6 +15055,56 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 	(0, import_react.useEffect)(() => {
 		if (generated) setCustomStake(generated.recommendedStake);
 	}, [generated]);
+	(0, import_react.useEffect)(() => {
+		if (!generated || generated.legs.length === 0) {
+			setLoadingReasonKeys({});
+			return;
+		}
+		const legsToFetch = aiRefreshNonce > 0 ? generated.legs : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg)]);
+		if (legsToFetch.length === 0) {
+			setLoadingReasonKeys({});
+			setAiError(null);
+			return;
+		}
+		const controller = new AbortController();
+		const pendingKeys = {};
+		legsToFetch.forEach((leg) => {
+			pendingKeys[getLegReasonCacheKey(leg)] = true;
+		});
+		setLoadingReasonKeys((prev) => ({
+			...prev,
+			...pendingKeys
+		}));
+		setAiError(null);
+		fetchTicketLegsReasoning(legsToFetch, controller.signal).then((res) => {
+			if (controller.signal.aborted) return;
+			setAiReasons((prev) => {
+				const next = { ...prev };
+				legsToFetch.forEach((leg) => {
+					const text = res.reasons[leg.matchId];
+					if (text && text.trim()) next[getLegReasonCacheKey(leg)] = text.trim();
+				});
+				saveCachedLegReasons(next);
+				return next;
+			});
+		}).catch((err) => {
+			if (controller.signal.aborted) return;
+			const message = err instanceof Error ? err.message : "Nepodařilo se načíst zdůvodnění z Gemini AI.";
+			setAiError(message);
+		}).finally(() => {
+			if (controller.signal.aborted) return;
+			setLoadingReasonKeys((prev) => {
+				const next = { ...prev };
+				legsToFetch.forEach((leg) => {
+					delete next[getLegReasonCacheKey(leg)];
+				});
+				return next;
+			});
+		});
+		return () => {
+			controller.abort();
+		};
+	}, [generated, aiRefreshNonce]);
 	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length, [
 		matches,
 		selectedSports,
@@ -15026,7 +15148,10 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 			createdAt: (/* @__PURE__ */ new Date()).toISOString(),
 			label: `${activeMode.title} (${generated.legs.length} ${generated.legs.length === 1 ? "zápas" : generated.legs.length <= 4 ? "zápasy" : "zápasů"})`,
 			riskLevel: activeMode.riskLabel,
-			legs: generated.legs,
+			legs: generated.legs.map((leg) => ({
+				...leg,
+				reasoning: aiReasons[getLegReasonCacheKey(leg)] ?? leg.reasoning ?? buildLocalFallbackReasoning(leg)
+			})),
 			totalOdds: generated.totalOdds,
 			totalProbability: generated.totalProbability,
 			recommendedStake: generated.recommendedStake,
@@ -15468,81 +15593,115 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 								className: "mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
-								children: generated.legs.map((leg, idx) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "min-w-0 space-y-1",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
-												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-														className: "font-mono text-slate-500",
-														children: ["#", idx + 1]
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.sport }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														"aria-hidden": "true",
-														children: "·"
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.league }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														"aria-hidden": "true",
-														children: "·"
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														className: "font-mono tabular-nums",
-														children: leg.kickoffTime
-													})
-												]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-												className: "font-display text-sm font-bold text-slate-100 sm:text-base",
-												children: [
-													leg.homeTeam,
-													" vs. ",
-													leg.awayTeam
-												]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex flex-wrap items-center gap-3 text-xs",
-												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-														className: "font-semibold text-emerald-300",
-														children: leg.recommendedPick
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-														className: "font-mono tabular-nums text-slate-300",
-														children: ["Šance: ", formatPercent(leg.aiProbability)]
-													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-														className: `font-mono tabular-nums ${leg.valueScore > 0 ? "text-emerald-400" : "text-slate-400"}`,
-														children: ["Value ", formatPercent(leg.valueScore, true)]
-													})
-												]
-											})
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center justify-between gap-3 sm:justify-end shrink-0",
+								children: generated.legs.map((leg, idx) => {
+									const reasonKey = getLegReasonCacheKey(leg);
+									const geminiReason = aiReasons[reasonKey];
+									const isLoadingReason = Boolean(loadingReasonKeys[reasonKey]);
+									const fallbackReason = leg.reasoning || buildLocalFallbackReasoning(leg);
+									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex flex-col gap-3 p-4",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "text-left sm:text-right",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "block text-[11px] text-slate-400",
-												children: "Betano kurz"
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "font-mono text-base font-bold tabular-nums text-slate-100",
-												children: formatOdds(leg.betanoOdds)
+											className: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "min-w-0 space-y-1",
+												children: [
+													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "flex flex-wrap items-center gap-2 text-xs text-slate-400",
+														children: [
+															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+																className: "font-mono text-slate-500",
+																children: ["#", idx + 1]
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.sport }),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+																"aria-hidden": "true",
+																children: "·"
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: leg.league }),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+																"aria-hidden": "true",
+																children: "·"
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+																className: "font-mono tabular-nums",
+																children: leg.kickoffTime
+															})
+														]
+													}),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+														className: "font-display text-sm font-bold text-slate-100 sm:text-base",
+														children: [
+															leg.homeTeam,
+															" vs. ",
+															leg.awayTeam
+														]
+													}),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "flex flex-wrap items-center gap-3 text-xs",
+														children: [
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+																className: "font-semibold text-emerald-300",
+																children: leg.recommendedPick
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+																className: "font-mono tabular-nums text-slate-300",
+																children: ["Šance: ", formatPercent(leg.aiProbability)]
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+																className: `font-mono tabular-nums ${leg.valueScore > 0 ? "text-emerald-400" : "text-slate-400"}`,
+																children: ["Value ", formatPercent(leg.valueScore, true)]
+															})
+														]
+													})
+												]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center justify-between gap-3 sm:justify-end shrink-0",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "text-left sm:text-right",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "block text-[11px] text-slate-400",
+														children: "Betano kurz"
+													}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "font-mono text-base font-bold tabular-nums text-slate-100",
+														children: formatOdds(leg.betanoOdds)
+													})]
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+													href: BETANO_HOME_URL,
+													target: "_blank",
+													rel: "noopener noreferrer",
+													onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
+													className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+												})]
 											})]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-											href: BETANO_HOME_URL,
-											target: "_blank",
-											rel: "noopener noreferrer",
-											onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
-											className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+												className: "flex items-center justify-between gap-2 text-[11px]",
+												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini AI analýza zápasu" : isLoadingReason ? "Gemini AI hodnotí formu, absence a Value..." : "Analytické zdůvodnění" })]
+												})
+											}), isLoadingReason && !geminiReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "mt-2 space-y-1.5",
+												"aria-busy": "true",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-4/5 animate-pulse rounded bg-slate-800" })]
+											}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+												className: "mt-1.5 text-xs leading-relaxed text-slate-300",
+												children: geminiReason || fallbackReason
+											})]
 										})]
-									})]
-								}, leg.matchId))
+									}, leg.matchId);
+								})
+							}),
+							aiError && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [aiError, " (Zobrazeno lokální statistické zdůvodnění.)"] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => setAiRefreshNonce((n) => n + 1),
+									className: "inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/25",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3 w-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zkusit Gemini znovu" })]
+								})]
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "mt-5 flex flex-col gap-3 border-t border-slate-800/80 pt-5 sm:flex-row sm:items-end sm:justify-between",

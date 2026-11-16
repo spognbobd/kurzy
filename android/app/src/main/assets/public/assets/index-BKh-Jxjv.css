@@ -723,6 +723,10 @@
     width: calc(var(--spacing) * 4);
   }
 
+  .w-4\/5 {
+    width: 80%;
+  }
+
   .w-5 {
     width: calc(var(--spacing) * 5);
   }
@@ -1674,6 +1678,10 @@
     white-space: nowrap;
   }
 
+  .text-amber-100 {
+    color: var(--color-amber-100);
+  }
+
   .text-amber-200 {
     color: var(--color-amber-200);
   }
@@ -1914,6 +1922,16 @@
 
     .hover\:bg-\[\#090D16\]:hover {
       background-color: #090d16;
+    }
+
+    .hover\:bg-amber-500\/25:hover {
+      background-color: #f99c0040;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-amber-500\/25:hover {
+        background-color: color-mix(in oklab, var(--color-amber-500) 25%, transparent);
+      }
     }
 
     .hover\:bg-emerald-400:hover {

@@ -359,6 +359,11 @@ function toLeg(m: MatchAnalysis): TicketLeg {
     betanoOdds: m.odds.betano,
     aiProbability: m.aiProbability,
     valueScore: m.valueScore,
+    marketAvgOdds: m.odds.marketAvg,
+    formHome: m.formHome,
+    formAway: m.formAway,
+    h2hSummary: m.h2hSummary,
+    reasoning: m.reasoning,
   };
 }
 

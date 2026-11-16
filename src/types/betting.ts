@@ -60,6 +60,11 @@ export interface TicketLeg {
   betanoOdds: number;
   aiProbability: number;
   valueScore: number;
+  marketAvgOdds?: number;
+  formHome?: FormResult[];
+  formAway?: FormResult[];
+  h2hSummary?: string;
+  reasoning?: string;
 }
 
 export interface Ticket {

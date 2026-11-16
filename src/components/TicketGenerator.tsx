@@ -29,6 +29,13 @@ import {
   formatPercent,
   generateOptimalTicket,
 } from '../utils/analyticsEngine';
+import {
+  buildLocalFallbackReasoning,
+  fetchTicketLegsReasoning,
+  getLegReasonCacheKey,
+  loadCachedLegReasons,
+  saveCachedLegReasons,
+} from '../services/geminiReasoningService';
 
 interface TicketGeneratorProps {
   matches: MatchAnalysis[];
@@ -142,6 +149,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [variationIndex, setVariationIndex] = useState(0);
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
+  const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedLegReasons());
+  const [loadingReasonKeys, setLoadingReasonKeys] = useState<Record<string, boolean>>({});
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiRefreshNonce, setAiRefreshNonce] = useState(0);
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
@@ -164,6 +175,68 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       setCustomStake(generated.recommendedStake);
     }
   }, [generated]);
+
+  useEffect(() => {
+    if (!generated || generated.legs.length === 0) {
+      setLoadingReasonKeys({});
+      return;
+    }
+
+    const forceRefresh = aiRefreshNonce > 0;
+    const legsToFetch = forceRefresh
+      ? generated.legs
+      : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg)]);
+
+    if (legsToFetch.length === 0) {
+      setLoadingReasonKeys({});
+      setAiError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const pendingKeys: Record<string, boolean> = {};
+    legsToFetch.forEach((leg) => {
+      pendingKeys[getLegReasonCacheKey(leg)] = true;
+    });
+    setLoadingReasonKeys((prev) => ({ ...prev, ...pendingKeys }));
+    setAiError(null);
+
+    void fetchTicketLegsReasoning(legsToFetch, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setAiReasons((prev) => {
+          const next = { ...prev };
+          legsToFetch.forEach((leg) => {
+            const text = res.reasons[leg.matchId];
+            if (text && text.trim()) {
+              next[getLegReasonCacheKey(leg)] = text.trim();
+            }
+          });
+          saveCachedLegReasons(next);
+          return next;
+        });
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof Error ? err.message : 'Nepodařilo se načíst zdůvodnění z Gemini AI.';
+        setAiError(message);
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        setLoadingReasonKeys((prev) => {
+          const next = { ...prev };
+          legsToFetch.forEach((leg) => {
+            delete next[getLegReasonCacheKey(leg)];
+          });
+          return next;
+        });
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [generated, aiRefreshNonce]);
 
   const eligibleMatchesCount = useMemo(
     () =>
@@ -228,7 +301,13 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
         generated.legs.length === 1 ? 'zápas' : generated.legs.length <= 4 ? 'zápasy' : 'zápasů'
       })`,
       riskLevel: activeMode.riskLabel,
-      legs: generated.legs,
+      legs: generated.legs.map((leg) => ({
+        ...leg,
+        reasoning:
+          aiReasons[getLegReasonCacheKey(leg)] ??
+          leg.reasoning ??
+          buildLocalFallbackReasoning(leg),
+      })),
       totalOdds: generated.totalOdds,
       totalProbability: generated.totalProbability,
       recommendedStake: generated.recommendedStake,
@@ -674,60 +753,107 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
               {/* Legs List */}
               <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
-                {generated.legs.map((leg, idx) => (
-                  <div
-                    key={leg.matchId}
-                    className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                        <span className="font-mono text-slate-500">#{idx + 1}</span>
-                        <span>{leg.sport}</span>
-                        <span aria-hidden="true">·</span>
-                        <span>{leg.league}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono tabular-nums">{leg.kickoffTime}</span>
+                {generated.legs.map((leg, idx) => {
+                  const reasonKey = getLegReasonCacheKey(leg);
+                  const geminiReason = aiReasons[reasonKey];
+                  const isLoadingReason = Boolean(loadingReasonKeys[reasonKey]);
+                  const fallbackReason = leg.reasoning || buildLocalFallbackReasoning(leg);
+
+                  return (
+                    <div key={leg.matchId} className="flex flex-col gap-3 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                            <span className="font-mono text-slate-500">#{idx + 1}</span>
+                            <span>{leg.sport}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{leg.league}</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono tabular-nums">{leg.kickoffTime}</span>
+                          </div>
+                          <p className="font-display text-sm font-bold text-slate-100 sm:text-base">
+                            {leg.homeTeam} vs. {leg.awayTeam}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-3 text-xs">
+                            <span className="font-semibold text-emerald-300">{leg.recommendedPick}</span>
+                            <span className="font-mono tabular-nums text-slate-300">
+                              Šance: {formatPercent(leg.aiProbability)}
+                            </span>
+                            <span
+                              className={`font-mono tabular-nums ${
+                                leg.valueScore > 0 ? 'text-emerald-400' : 'text-slate-400'
+                              }`}
+                            >
+                              Value {formatPercent(leg.valueScore, true)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 sm:justify-end shrink-0">
+                          <div className="text-left sm:text-right">
+                            <span className="block text-[11px] text-slate-400">Betano kurz</span>
+                            <span className="font-mono text-base font-bold tabular-nums text-slate-100">
+                              {formatOdds(leg.betanoOdds)}
+                            </span>
+                          </div>
+
+                          <a
+                            href={BETANO_HOME_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
+                            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
+                          >
+                            <span>Otevřít na Betanu</span>
+                            <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
+                          </a>
+                        </div>
                       </div>
-                      <p className="font-display text-sm font-bold text-slate-100 sm:text-base">
-                        {leg.homeTeam} vs. {leg.awayTeam}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-3 text-xs">
-                        <span className="font-semibold text-emerald-300">{leg.recommendedPick}</span>
-                        <span className="font-mono tabular-nums text-slate-300">
-                          Šance: {formatPercent(leg.aiProbability)}
-                        </span>
-                        <span
-                          className={`font-mono tabular-nums ${
-                            leg.valueScore > 0 ? 'text-emerald-400' : 'text-slate-400'
-                          }`}
-                        >
-                          Value {formatPercent(leg.valueScore, true)}
-                        </span>
+
+                      {/* Concise 2-3 Sentence Gemini AI Reasoning Directly Below Odds & Betano Row */}
+                      <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                            <Sparkles className="h-3 w-3 shrink-0" />
+                            <span>
+                              {geminiReason
+                                ? 'Gemini AI analýza zápasu'
+                                : isLoadingReason
+                                ? 'Gemini AI hodnotí formu, absence a Value...'
+                                : 'Analytické zdůvodnění'}
+                            </span>
+                          </span>
+                        </div>
+
+                        {isLoadingReason && !geminiReason ? (
+                          <div className="mt-2 space-y-1.5" aria-busy="true">
+                            <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                            <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
+                          </div>
+                        ) : (
+                          <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
+                            {geminiReason || fallbackReason}
+                          </p>
+                        )}
                       </div>
                     </div>
-
-                    <div className="flex items-center justify-between gap-3 sm:justify-end shrink-0">
-                      <div className="text-left sm:text-right">
-                        <span className="block text-[11px] text-slate-400">Betano kurz</span>
-                        <span className="font-mono text-base font-bold tabular-nums text-slate-100">
-                          {formatOdds(leg.betanoOdds)}
-                        </span>
-                      </div>
-
-                      <a
-                        href={BETANO_HOME_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
-                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
-                      >
-                        <span>Otevřít na Betanu</span>
-                        <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
-                      </a>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
+              {aiError && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
+                  <span>{aiError} (Zobrazeno lokální statistické zdůvodnění.)</span>
+                  <button
+                    type="button"
+                    onClick={() => setAiRefreshNonce((n) => n + 1)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/25"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Zkusit Gemini znovu</span>
+                  </button>
+                </div>
+              )}
 
               {/* Stake Adjustment & 1-Click Save to Bankroll */}
               <div className="mt-5 flex flex-col gap-3 border-t border-slate-800/80 pt-5 sm:flex-row sm:items-end sm:justify-between">
