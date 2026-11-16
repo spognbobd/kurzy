@@ -30,10 +30,9 @@ import {
   generateOptimalTicket,
 } from '../utils/analyticsEngine';
 import {
-  fetchTicketLegsReasoning,
-  getLegReasonCacheKey,
-  loadCachedLegReasons,
-  saveCachedLegReasons,
+  fetchSingleMatchReasoning,
+  loadCachedMatchReasons,
+  saveCachedMatchReasons,
 } from '../services/geminiReasoningService';
 
 interface TicketGeneratorProps {
@@ -119,6 +118,7 @@ const RISK_BADGE_STYLES: Record<EstimatedRiskBadge, { container: string; text: s
 
 function renderFormattedGeminiReasoning(text: string) {
   const paragraphs = text
+    .replace(/\*\*/g, '')
     .split(/\n+/)
     .map((p) => p.trim())
     .filter(Boolean);
@@ -185,11 +185,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [variationIndex, setVariationIndex] = useState(0);
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
-  const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedLegReasons());
-  const [loadingReasonKeys, setLoadingReasonKeys] = useState<Record<string, boolean>>({});
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiRefreshNonce, setAiRefreshNonce] = useState(0);
-  const lastHandledNonceRef = React.useRef(0);
+  const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
+  const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
+  const [matchAiErrors, setMatchAiErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
@@ -216,70 +214,35 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const trimmedGeminiKey = geminiApiKey.trim();
   const hasGeminiKey = trimmedGeminiKey.length > 0;
 
-  useEffect(() => {
-    const forceRefresh = aiRefreshNonce !== lastHandledNonceRef.current;
-    lastHandledNonceRef.current = aiRefreshNonce;
+  const handleFetchSingleAnalysis = async (leg: Ticket['legs'][number]) => {
+    if (!hasGeminiKey || loadingMatchIds[leg.matchId]) return;
 
-    if (!hasGeminiKey || !generated || generated.legs.length === 0) {
-      setLoadingReasonKeys({});
-      setAiError(null);
-      return;
-    }
-
-    const legsToFetch = forceRefresh
-      ? generated.legs
-      : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)]);
-
-    if (legsToFetch.length === 0) {
-      setLoadingReasonKeys({});
-      setAiError(null);
-      return;
-    }
-
-    const controller = new AbortController();
-    const pendingKeys: Record<string, boolean> = {};
-    legsToFetch.forEach((leg) => {
-      pendingKeys[getLegReasonCacheKey(leg, trimmedGeminiKey)] = true;
+    setLoadingMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
+    setMatchAiErrors((prev) => {
+      const next = { ...prev };
+      delete next[leg.matchId];
+      return next;
     });
-    setLoadingReasonKeys((prev) => ({ ...prev, ...pendingKeys }));
-    setAiError(null);
 
-    void fetchTicketLegsReasoning(legsToFetch, trimmedGeminiKey, controller.signal)
-      .then((reasonsMap) => {
-        if (controller.signal.aborted) return;
-        setAiReasons((prev) => {
-          const next = { ...prev };
-          legsToFetch.forEach((leg) => {
-            const text = reasonsMap[leg.matchId];
-            if (text && text.trim()) {
-              next[getLegReasonCacheKey(leg, trimmedGeminiKey)] = text.trim();
-            }
-          });
-          saveCachedLegReasons(next);
-          return next;
-        });
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        const message =
-          err instanceof Error ? err.message : 'Nepodařilo se načíst zdůvodnění z Gemini API.';
-        setAiError(message);
-      })
-      .finally(() => {
-        if (controller.signal.aborted) return;
-        setLoadingReasonKeys((prev) => {
-          const next = { ...prev };
-          legsToFetch.forEach((leg) => {
-            delete next[getLegReasonCacheKey(leg, trimmedGeminiKey)];
-          });
-          return next;
-        });
+    try {
+      const text = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
+      setAiReasons((prev) => {
+        const next = { ...prev, [leg.matchId]: text };
+        saveCachedMatchReasons(next);
+        return next;
       });
-
-    return () => {
-      controller.abort();
-    };
-  }, [generated, trimmedGeminiKey, hasGeminiKey, aiRefreshNonce]);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Nepodařilo se načíst AI analýzu z Gemini API.';
+      setMatchAiErrors((prev) => ({ ...prev, [leg.matchId]: message }));
+    } finally {
+      setLoadingMatchIds((prev) => {
+        const next = { ...prev };
+        delete next[leg.matchId];
+        return next;
+      });
+    }
+  };
 
   const eligibleMatchesCount = useMemo(
     () =>
@@ -347,7 +310,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       legs: generated.legs.map((leg) => ({
         ...leg,
         reasoning: hasGeminiKey
-          ? aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)] ?? leg.reasoning
+          ? aiReasons[leg.matchId] ?? leg.reasoning
           : leg.reasoning,
       })),
       totalOdds: generated.totalOdds,
@@ -796,11 +759,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               {/* Legs List */}
               <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
-                  const reasonKey = hasGeminiKey
-                    ? getLegReasonCacheKey(leg, trimmedGeminiKey)
-                    : '';
-                  const geminiReason = hasGeminiKey ? aiReasons[reasonKey] : undefined;
-                  const isLoadingReason = hasGeminiKey && Boolean(loadingReasonKeys[reasonKey]);
+                  const geminiReason = hasGeminiKey ? aiReasons[leg.matchId] : undefined;
+                  const isLoadingReason = hasGeminiKey && Boolean(loadingMatchIds[leg.matchId]);
+                  const legError = hasGeminiKey ? matchAiErrors[leg.matchId] : undefined;
 
                   return (
                     <div key={leg.matchId} className="flex flex-col gap-3 p-4">
@@ -853,49 +814,56 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         </div>
                       </div>
 
-                      {/* Gemini AI Grounded Reasoning (only rendered when Gemini API key is set) */}
-                      {hasGeminiKey && (isLoadingReason || geminiReason) && (
-                        <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
-                          <div className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
-                              <Sparkles className="h-3 w-3 shrink-0" />
-                              <span>
-                                {geminiReason
-                                  ? 'Gemini 3.8 Flash · Google Search analýza'
-                                  : 'Gemini AI vyhledává aktuální formu, zranění a Value...'}
-                              </span>
-                            </span>
-                          </div>
-
-                          {isLoadingReason && !geminiReason ? (
-                            <div className="mt-2 space-y-1.5" aria-busy="true">
-                              <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
-                              <div className="h-3 w-5/6 animate-pulse rounded bg-slate-800" />
-                              <div className="h-3 w-3/4 animate-pulse rounded bg-slate-800" />
+                      {/* On-Demand Gemini AI Grounded Reasoning (only when Gemini API key is set) */}
+                      {hasGeminiKey && (
+                        <>
+                          {geminiReason ? (
+                            <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                              <div className="flex items-center justify-between gap-2 text-[11px]">
+                                <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                                  <Sparkles className="h-3 w-3 shrink-0" />
+                                  <span>Gemini 3.8 Flash · Google Search analýza</span>
+                                </span>
+                              </div>
+                              {renderFormattedGeminiReasoning(geminiReason)}
+                            </div>
+                          ) : isLoadingReason ? (
+                            <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
+                                <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
+                                <span>Gemini AI vyhledává aktuální formu, zranění a Value...</span>
+                              </div>
+                              <div className="mt-2 space-y-1.5" aria-busy="true">
+                                <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                                <div className="h-3 w-5/6 animate-pulse rounded bg-slate-800" />
+                                <div className="h-3 w-3/4 animate-pulse rounded bg-slate-800" />
+                              </div>
                             </div>
                           ) : (
-                            geminiReason && renderFormattedGeminiReasoning(geminiReason)
+                            <div className="flex flex-col gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleFetchSingleAnalysis(leg)}
+                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20"
+                                >
+                                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                                  <span>Zobrazit AI analýzu</span>
+                                </button>
+                              </div>
+                              {legError && (
+                                <div className="rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                                  {legError}
+                                </div>
+                              )}
+                            </div>
                           )}
-                        </div>
+                        </>
                       )}
                     </div>
                   );
                 })}
               </div>
-
-              {hasGeminiKey && aiError && (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-200">
-                  <span>{aiError}</span>
-                  <button
-                    type="button"
-                    onClick={() => setAiRefreshNonce((n) => n + 1)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 font-semibold text-rose-100 hover:bg-rose-500/25"
-                  >
-                    <RefreshCw className="h-3 w-3" />
-                    <span>Zkusit znovu</span>
-                  </button>
-                </div>
-              )}
 
               {/* Stake Adjustment & 1-Click Save to Bankroll */}
               <div className="mt-5 flex flex-col gap-3 border-t border-slate-800/80 pt-5 sm:flex-row sm:items-end sm:justify-between">
