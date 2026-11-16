@@ -1,12 +1,7 @@
 import { TicketLeg } from '../types/betting';
 
 const LOCAL_STORAGE_REASONS_KEY = 'betedge_gemini_match_reasons_v1';
-
-const GEMINI_MODEL_FALLBACK_CHAIN = [
-  'gemini-3.8-flash',
-  'gemini-3-flash-preview',
-  'gemini-2.5-flash',
-] as const;
+const GEMINI_TIMEOUT_MS = 6000;
 
 export function loadCachedMatchReasons(): Record<string, string> {
   if (typeof window === 'undefined') return {};
@@ -35,6 +30,7 @@ export function saveCachedMatchReasons(reasons: Record<string, string>): void {
 export function resolveTippedAndOpponent(leg: TicketLeg): {
   tippedTeam: string;
   opponentTeam: string;
+  tippedIsAway: boolean;
 } {
   const cleanHome = leg.homeTeam.replace(/\(.*?\)/g, '').trim();
   const cleanAway = leg.awayTeam.replace(/\(.*?\)/g, '').trim();
@@ -52,9 +48,44 @@ export function resolveTippedAndOpponent(leg: TicketLeg): {
       (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped)));
 
   if (isAway) {
-    return { tippedTeam: cleanAway || leg.awayTeam, opponentTeam: cleanHome || leg.homeTeam };
+    return {
+      tippedTeam: cleanAway || leg.awayTeam,
+      opponentTeam: cleanHome || leg.homeTeam,
+      tippedIsAway: true,
+    };
   }
-  return { tippedTeam: cleanHome || leg.homeTeam, opponentTeam: cleanAway || leg.awayTeam };
+  return {
+    tippedTeam: cleanHome || leg.homeTeam,
+    opponentTeam: cleanAway || leg.awayTeam,
+    tippedIsAway: false,
+  };
+}
+
+export function buildStatisticalMatchReasoning(leg: TicketLeg): string {
+  const { tippedTeam, opponentTeam, tippedIsAway } = resolveTippedAndOpponent(leg);
+  const betanoOdds = leg.betanoOdds.toFixed(2);
+  const marketAvgNum = leg.marketAvgOdds ?? leg.betanoOdds;
+  const marketAvg = marketAvgNum.toFixed(2);
+  const probStr = `${leg.aiProbability.toFixed(1).replace('.', ',')} %`;
+  const impliedStr = `${((1 / leg.betanoOdds) * 100).toFixed(1).replace('.', ',')} %`;
+  const valueStr = `${leg.valueScore > 0 ? '+' : ''}${leg.valueScore.toFixed(1).replace('.', ',')} %`;
+
+  const tippedForm = (tippedIsAway ? leg.formAway : leg.formHome)?.join('-') ?? 'vyrovnaná';
+  const oppForm = (tippedIsAway ? leg.formHome : leg.formAway)?.join('-') ?? 'vyrovnaná';
+  const h2hNote = leg.h2hSummary ? ` (${leg.h2hSummary})` : '';
+
+  const verdictLine =
+    leg.betanoOdds > marketAvgNum
+      ? `Verdikt k tiketu: Kurz Betana ${betanoOdds} leží nad průměrem trhu (${marketAvg}) a při odhadované pravděpodobnosti výhry ${probStr} generuje hodnotu Value ${valueStr}.`
+      : `Verdikt k tiketu: Nabízený kurz Betana ${betanoOdds} (průměr trhu ${marketAvg}) odpovídá pravděpodobnosti výhry ${probStr} s výslednou hodnotou Value ${valueStr}.`;
+
+  return [
+    `Aktuální forma / herní styl ${tippedTeam}: V soutěži ${leg.league} drží bilanci posledních 5 utkání ${tippedForm}, což pro tip „${leg.recommendedPick}“ znamená modelovou pravděpodobnost výhry ${probStr} oproti implikované šanci kurzu ${impliedStr}.`,
+    ``,
+    `Síla soupeře ${opponentTeam}: Soupeř vstupuje do zápasu s formou ${oppForm}${h2hNote}, na základě čehož trh oceňuje zápas průměrným kurzem ${marketAvg}.`,
+    ``,
+    verdictLine,
+  ].join('\n');
 }
 
 interface GeminiRestResponse {
@@ -65,22 +96,20 @@ interface GeminiRestResponse {
       }>;
     };
   }>;
-  error?: {
-    code?: number;
-    message?: string;
-    status?: string;
-  };
+}
+
+export interface SingleMatchAnalysisResult {
+  text: string;
+  source: 'gemini' | 'stats';
 }
 
 export async function fetchSingleMatchReasoning(
   leg: TicketLeg,
-  geminiApiKey: string,
-  signal?: AbortSignal
-): Promise<string> {
-  // Always trim and strip stray whitespace/newlines from keys loaded out of localStorage
+  geminiApiKey: string
+): Promise<SingleMatchAnalysisResult> {
   const apiKey = geminiApiKey.trim().replace(/\s+/g, '');
   if (!apiKey) {
-    throw new Error('Chybí Gemini API klíč.');
+    return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
   }
 
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -119,73 +148,30 @@ export async function fetchSingleMatchReasoning(
     `Data zápasu: ${JSON.stringify(matchContext)}`,
   ].join('\n');
 
-  // Standard clean REST body with only `contents`
-  const requestBody = JSON.stringify({
-    contents: [
-      {
-        parts: [{ text: prompt }],
-      },
-    ],
-  });
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
-  let lastErrorMessage = 'Nepodařilo se spojit s Gemini REST API.';
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
-  for (let i = 0; i < GEMINI_MODEL_FALLBACK_CHAIN.length; i++) {
-    const model = GEMINI_MODEL_FALLBACK_CHAIN[i];
-    const hasNextFallback = i < GEMINI_MODEL_FALLBACK_CHAIN.length - 1;
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
-      apiKey
-    )}`;
-
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal,
-        body: requestBody,
-      });
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
-      lastErrorMessage = `Síťová chyba při volání ${model} (${msg}). Zkontrolujte připojení nebo blokování požadavků v prohlížeči.`;
-      if (hasNextFallback) continue;
-      throw new Error(lastErrorMessage);
-    }
-
-    let payload: GeminiRestResponse = {};
-    try {
-      payload = (await response.json()) as GeminiRestResponse;
-    } catch {
-      payload = {};
-    }
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }],
+          },
+        ],
+      }),
+    });
 
     if (!response.ok) {
-      const errMsg = payload.error?.message || `HTTP ${response.status}`;
-
-      if (response.status === 429) {
-        throw new Error(
-          'Překročen limit požadavků Gemini API (429). Počkejte prosím chvíli a zkuste to znovu.'
-        );
-      }
-
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(
-          `Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`
-        );
-      }
-
-      lastErrorMessage = `Gemini API (${model}) vrátilo chybu ${response.status}: ${errMsg}`;
-      if ((response.status === 404 || response.status === 400) && hasNextFallback) {
-        continue;
-      }
-
-      if (response.status === 400 && /api key/i.test(errMsg)) {
-        throw new Error(`Neplatný Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
-      }
-      throw new Error(lastErrorMessage);
+      return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
     }
 
+    const payload = (await response.json()) as GeminiRestResponse;
     const rawText =
       payload.candidates?.[0]?.content?.parts
         ?.map((p) => p.text ?? '')
@@ -193,13 +179,15 @@ export async function fetchSingleMatchReasoning(
         .replace(/\*\*/g, '')
         .trim() ?? '';
 
-    if (rawText) {
-      return rawText;
+    if (!rawText) {
+      return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
     }
 
-    lastErrorMessage = `Model ${model} nevrátil žádný text analýzy.`;
-    if (hasNextFallback) continue;
+    return { text: rawText, source: 'gemini' };
+  } catch {
+    // On 6s timeout or any network/CORS error, immediately return clean statistical analysis
+    return { text: buildStatisticalMatchReasoning(leg), source: 'stats' };
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  throw new Error(lastErrorMessage);
 }

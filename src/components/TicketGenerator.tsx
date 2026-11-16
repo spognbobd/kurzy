@@ -186,8 +186,8 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
+  const [statFallbackReasons, setStatFallbackReasons] = useState<Record<string, string>>({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
-  const [matchAiErrors, setMatchAiErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
@@ -218,23 +218,18 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     if (!hasGeminiKey || loadingMatchIds[leg.matchId]) return;
 
     setLoadingMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
-    setMatchAiErrors((prev) => {
-      const next = { ...prev };
-      delete next[leg.matchId];
-      return next;
-    });
 
     try {
-      const text = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
-      setAiReasons((prev) => {
-        const next = { ...prev, [leg.matchId]: text };
-        saveCachedMatchReasons(next);
-        return next;
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Nepodařilo se načíst AI analýzu z Gemini API.';
-      setMatchAiErrors((prev) => ({ ...prev, [leg.matchId]: message }));
+      const result = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
+      if (result.source === 'gemini') {
+        setAiReasons((prev) => {
+          const next = { ...prev, [leg.matchId]: result.text };
+          saveCachedMatchReasons(next);
+          return next;
+        });
+      } else {
+        setStatFallbackReasons((prev) => ({ ...prev, [leg.matchId]: result.text }));
+      }
     } finally {
       setLoadingMatchIds((prev) => {
         const next = { ...prev };
@@ -310,7 +305,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       legs: generated.legs.map((leg) => ({
         ...leg,
         reasoning: hasGeminiKey
-          ? aiReasons[leg.matchId] ?? leg.reasoning
+          ? aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId] ?? leg.reasoning
           : leg.reasoning,
       })),
       totalOdds: generated.totalOdds,
@@ -760,8 +755,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
                   const geminiReason = hasGeminiKey ? aiReasons[leg.matchId] : undefined;
+                  const statReason = hasGeminiKey ? statFallbackReasons[leg.matchId] : undefined;
+                  const activeReason = geminiReason || statReason;
                   const isLoadingReason = hasGeminiKey && Boolean(loadingMatchIds[leg.matchId]);
-                  const legError = hasGeminiKey ? matchAiErrors[leg.matchId] : undefined;
 
                   return (
                     <div key={leg.matchId} className="flex flex-col gap-3 p-4">
@@ -814,46 +810,48 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         </div>
                       </div>
 
-                      {/* On-Demand Gemini AI Grounded Reasoning (only when Gemini API key is set) */}
+                      {/* On-Demand Analysis (only when Gemini API key is set) */}
                       {hasGeminiKey && (
                         <>
-                          {geminiReason ? (
+                          {activeReason ? (
                             <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
                               <div className="flex items-center justify-between gap-2 text-[11px]">
                                 <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
                                   <Sparkles className="h-3 w-3 shrink-0" />
-                                  <span>Gemini AI · Analýza zápasu</span>
+                                  <span>
+                                    {geminiReason
+                                      ? 'Gemini 3.8 Flash · AI analýza'
+                                      : 'Statistický rozbor zápasu'}
+                                  </span>
                                 </span>
                               </div>
-                              {renderFormattedGeminiReasoning(geminiReason)}
-                            </div>
-                          ) : isLoadingReason ? (
-                            <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
-                              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
-                                <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
-                                <span>Gemini AI analyzuje herní styl, data zápasu a Value...</span>
-                              </div>
-                              <div className="mt-2 space-y-1.5" aria-busy="true">
-                                <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
-                                <div className="h-3 w-5/6 animate-pulse rounded bg-slate-800" />
-                                <div className="h-3 w-3/4 animate-pulse rounded bg-slate-800" />
-                              </div>
+                              {renderFormattedGeminiReasoning(activeReason)}
                             </div>
                           ) : (
                             <div className="flex flex-col gap-2">
                               <div className="flex flex-wrap items-center gap-2">
                                 <button
                                   type="button"
+                                  disabled={isLoadingReason}
                                   onClick={() => void handleFetchSingleAnalysis(leg)}
-                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20"
+                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
                                 >
-                                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                                  <span>Zobrazit AI analýzu</span>
+                                  {isLoadingReason ? (
+                                    <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                                  ) : (
+                                    <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                                  )}
+                                  <span>
+                                    {isLoadingReason ? 'Načítám analýzu...' : 'Zobrazit AI analýzu'}
+                                  </span>
                                 </button>
                               </div>
-                              {legError && (
-                                <div className="rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-                                  {legError}
+                              {isLoadingReason && (
+                                <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                                  <div className="space-y-1.5" aria-busy="true">
+                                    <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                                    <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
+                                  </div>
                                 </div>
                               )}
                             </div>

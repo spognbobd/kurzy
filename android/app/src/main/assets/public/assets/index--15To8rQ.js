@@ -14892,11 +14892,7 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 };
 // src/services/geminiReasoningService.ts
 var LOCAL_STORAGE_REASONS_KEY = "betedge_gemini_match_reasons_v1";
-var GEMINI_MODEL_FALLBACK_CHAIN = [
-	"gemini-3.8-flash",
-	"gemini-3-flash-preview",
-	"gemini-2.5-flash"
-];
+var GEMINI_TIMEOUT_MS = 6e3;
 function loadCachedMatchReasons() {
 	if (typeof window === "undefined") return {};
 	try {
@@ -14922,16 +14918,41 @@ function resolveTippedAndOpponent(leg) {
 	const stripped = pick.replace(/^výhra\s+/i, "").replace(/\(.*?\)/g, "").trim().toLowerCase();
 	if (/\(2\)/.test(pick) || Boolean(cleanAway) && Boolean(stripped) && (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped))) return {
 		tippedTeam: cleanAway || leg.awayTeam,
-		opponentTeam: cleanHome || leg.homeTeam
+		opponentTeam: cleanHome || leg.homeTeam,
+		tippedIsAway: true
 	};
 	return {
 		tippedTeam: cleanHome || leg.homeTeam,
-		opponentTeam: cleanAway || leg.awayTeam
+		opponentTeam: cleanAway || leg.awayTeam,
+		tippedIsAway: false
 	};
 }
-async function fetchSingleMatchReasoning(leg, geminiApiKey, signal) {
+function buildStatisticalMatchReasoning(leg) {
+	const { tippedTeam, opponentTeam, tippedIsAway } = resolveTippedAndOpponent(leg);
+	const betanoOdds = leg.betanoOdds.toFixed(2);
+	const marketAvgNum = leg.marketAvgOdds ?? leg.betanoOdds;
+	const marketAvg = marketAvgNum.toFixed(2);
+	const probStr = `${leg.aiProbability.toFixed(1).replace(".", ",")} %`;
+	const impliedStr = `${(1 / leg.betanoOdds * 100).toFixed(1).replace(".", ",")} %`;
+	const valueStr = `${leg.valueScore > 0 ? "+" : ""}${leg.valueScore.toFixed(1).replace(".", ",")} %`;
+	const tippedForm = (tippedIsAway ? leg.formAway : leg.formHome)?.join("-") ?? "vyrovnaná";
+	const oppForm = (tippedIsAway ? leg.formHome : leg.formAway)?.join("-") ?? "vyrovnaná";
+	const h2hNote = leg.h2hSummary ? ` (${leg.h2hSummary})` : "";
+	const verdictLine = leg.betanoOdds > marketAvgNum ? `Verdikt k tiketu: Kurz Betana ${betanoOdds} leží nad průměrem trhu (${marketAvg}) a při odhadované pravděpodobnosti výhry ${probStr} generuje hodnotu Value ${valueStr}.` : `Verdikt k tiketu: Nabízený kurz Betana ${betanoOdds} (průměr trhu ${marketAvg}) odpovídá pravděpodobnosti výhry ${probStr} s výslednou hodnotou Value ${valueStr}.`;
+	return [
+		`Aktuální forma / herní styl ${tippedTeam}: V soutěži ${leg.league} drží bilanci posledních 5 utkání ${tippedForm}, což pro tip „${leg.recommendedPick}“ znamená modelovou pravděpodobnost výhry ${probStr} oproti implikované šanci kurzu ${impliedStr}.`,
+		``,
+		`Síla soupeře ${opponentTeam}: Soupeř vstupuje do zápasu s formou ${oppForm}${h2hNote}, na základě čehož trh oceňuje zápas průměrným kurzem ${marketAvg}.`,
+		``,
+		verdictLine
+	].join("\n");
+}
+async function fetchSingleMatchReasoning(leg, geminiApiKey) {
 	const apiKey = geminiApiKey.trim().replace(/\s+/g, "");
-	if (!apiKey) throw new Error("Chybí Gemini API klíč.");
+	if (!apiKey) return {
+		text: buildStatisticalMatchReasoning(leg),
+		source: "stats"
+	};
 	const todayIso = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 	const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
 	const matchContext = {
@@ -14965,47 +14986,37 @@ async function fetchSingleMatchReasoning(leg, geminiApiKey, signal) {
 		``,
 		`Data zápasu: ${JSON.stringify(matchContext)}`
 	].join("\n");
-	const requestBody = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-	let lastErrorMessage = "Nepodařilo se spojit s Gemini REST API.";
-	for (let i = 0; i < GEMINI_MODEL_FALLBACK_CHAIN.length; i++) {
-		const model = GEMINI_MODEL_FALLBACK_CHAIN[i];
-		const hasNextFallback = i < GEMINI_MODEL_FALLBACK_CHAIN.length - 1;
-		const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-		let response;
-		try {
-			response = await fetch(endpoint, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				signal,
-				body: requestBody
-			});
-		} catch (err) {
-			if (signal?.aborted) throw err;
-			lastErrorMessage = `Síťová chyba při volání ${model} (${err instanceof Error ? err.message : String(err)}). Zkontrolujte připojení nebo blokování požadavků v prohlížeči.`;
-			if (hasNextFallback) continue;
-			throw new Error(lastErrorMessage);
-		}
-		let payload = {};
-		try {
-			payload = await response.json();
-		} catch {
-			payload = {};
-		}
-		if (!response.ok) {
-			const errMsg = payload.error?.message || `HTTP ${response.status}`;
-			if (response.status === 429) throw new Error("Překročen limit požadavků Gemini API (429). Počkejte prosím chvíli a zkuste to znovu.");
-			if (response.status === 401 || response.status === 403) throw new Error(`Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
-			lastErrorMessage = `Gemini API (${model}) vrátilo chybu ${response.status}: ${errMsg}`;
-			if ((response.status === 404 || response.status === 400) && hasNextFallback) continue;
-			if (response.status === 400 && /api key/i.test(errMsg)) throw new Error(`Neplatný Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
-			throw new Error(lastErrorMessage);
-		}
-		const rawText = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
-		if (rawText) return rawText;
-		lastErrorMessage = `Model ${model} nevrátil žádný text analýzy.`;
-		if (hasNextFallback) continue;
+	const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+	try {
+		const response = await fetch(endpoint, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			signal: controller.signal,
+			body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+		});
+		if (!response.ok) return {
+			text: buildStatisticalMatchReasoning(leg),
+			source: "stats"
+		};
+		const rawText = (await response.json()).candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
+		if (!rawText) return {
+			text: buildStatisticalMatchReasoning(leg),
+			source: "stats"
+		};
+		return {
+			text: rawText,
+			source: "gemini"
+		};
+	} catch {
+		return {
+			text: buildStatisticalMatchReasoning(leg),
+			source: "stats"
+		};
+	} finally {
+		clearTimeout(timeoutId);
 	}
-	throw new Error(lastErrorMessage);
 }
 // src/components/TicketGenerator.tsx
 var ALL_SPORTS = [
@@ -15110,8 +15121,8 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
 	const [aiReasons, setAiReasons] = (0, import_react.useState)(() => loadCachedMatchReasons());
+	const [statFallbackReasons, setStatFallbackReasons] = (0, import_react.useState)({});
 	const [loadingMatchIds, setLoadingMatchIds] = (0, import_react.useState)({});
-	const [matchAiErrors, setMatchAiErrors] = (0, import_react.useState)({});
 	(0, import_react.useEffect)(() => {
 		setMinMatchProbability(recommendedMinProb);
 		setVariationIndex(0);
@@ -15137,26 +15148,19 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			...prev,
 			[leg.matchId]: true
 		}));
-		setMatchAiErrors((prev) => {
-			const next = { ...prev };
-			delete next[leg.matchId];
-			return next;
-		});
 		try {
-			const text = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
-			setAiReasons((prev) => {
+			const result = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
+			if (result.source === "gemini") setAiReasons((prev) => {
 				const next = {
 					...prev,
-					[leg.matchId]: text
+					[leg.matchId]: result.text
 				};
 				saveCachedMatchReasons(next);
 				return next;
 			});
-		} catch (err) {
-			const message = err instanceof Error ? err.message : "Nepodařilo se načíst AI analýzu z Gemini API.";
-			setMatchAiErrors((prev) => ({
+			else setStatFallbackReasons((prev) => ({
 				...prev,
-				[leg.matchId]: message
+				[leg.matchId]: result.text
 			}));
 		} finally {
 			setLoadingMatchIds((prev) => {
@@ -15211,7 +15215,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			riskLevel: activeMode.riskLabel,
 			legs: generated.legs.map((leg) => ({
 				...leg,
-				reasoning: hasGeminiKey ? aiReasons[leg.matchId] ?? leg.reasoning : leg.reasoning
+				reasoning: hasGeminiKey ? aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId] ?? leg.reasoning : leg.reasoning
 			})),
 			totalOdds: generated.totalOdds,
 			totalProbability: generated.totalProbability,
@@ -15656,8 +15660,9 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 								className: "mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
 								children: generated.legs.map((leg, idx) => {
 									const geminiReason = hasGeminiKey ? aiReasons[leg.matchId] : void 0;
+									const statReason = hasGeminiKey ? statFallbackReasons[leg.matchId] : void 0;
+									const activeReason = geminiReason || statReason;
 									const isLoadingReason = hasGeminiKey && Boolean(loadingMatchIds[leg.matchId]);
-									const legError = hasGeminiKey ? matchAiErrors[leg.matchId] : void 0;
 									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 										className: "flex flex-col gap-3 p-4",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -15734,42 +15739,33 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
 												})]
 											})]
-										}), hasGeminiKey && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_jsx_runtime.Fragment, { children: geminiReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										}), hasGeminiKey && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_jsx_runtime.Fragment, { children: activeReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
 											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 												className: "flex items-center justify-between gap-2 text-[11px]",
 												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Gemini AI · Analýza zápasu" })]
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini 3.8 Flash · AI analýza" : "Statistický rozbor zápasu" })]
 												})
-											}), renderFormattedGeminiReasoning(geminiReason)]
-										}) : isLoadingReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3 w-3 shrink-0 animate-spin" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Gemini AI analyzuje herní styl, data zápasu a Value..." })]
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "mt-2 space-y-1.5",
-												"aria-busy": "true",
-												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-5/6 animate-pulse rounded bg-slate-800" }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-3/4 animate-pulse rounded bg-slate-800" })
-												]
-											})]
+											}), renderFormattedGeminiReasoning(activeReason)]
 										}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 											className: "flex flex-col gap-2",
 											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 												className: "flex flex-wrap items-center gap-2",
 												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 													type: "button",
+													disabled: isLoadingReason,
 													onClick: () => void handleFetchSingleAnalysis(leg),
-													className: "inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zobrazit AI analýzu" })]
+													className: "inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55",
+													children: [isLoadingReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3.5 w-3.5 shrink-0 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3.5 w-3.5 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isLoadingReason ? "Načítám analýzu..." : "Zobrazit AI analýzu" })]
 												})
-											}), legError && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200",
-												children: legError
+											}), isLoadingReason && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+												className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
+												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "space-y-1.5",
+													"aria-busy": "true",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-4/5 animate-pulse rounded bg-slate-800" })]
+												})
 											})]
 										}) })]
 									}, leg.matchId);
