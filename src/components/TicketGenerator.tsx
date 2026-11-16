@@ -822,7 +822,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               <div className="flex items-center justify-between gap-2 text-[11px]">
                                 <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
                                   <Sparkles className="h-3 w-3 shrink-0" />
-                                  <span>Gemini 3.8 Flash · Google Search analýza</span>
+                                  <span>Gemini 3.8 Flash · AI analýza zápasu</span>
                                 </span>
                               </div>
                               {renderFormattedGeminiReasoning(geminiReason)}
@@ -831,7 +831,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                             <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
                               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
                                 <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
-                                <span>Gemini AI vyhledává aktuální formu, zranění a Value...</span>
+                                <span>Gemini AI analyzuje herní styl, data zápasu a Value...</span>
                               </div>
                               <div className="mt-2 space-y-1.5" aria-busy="true">
                                 <div className="h-3 w-full animate-pulse rounded bg-slate-800" />

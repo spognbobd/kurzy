@@ -83,28 +83,31 @@ export async function fetchSingleMatchReasoning(
     sport: leg.sport,
     soutez: leg.league,
     zapas: `${leg.homeTeam} vs. ${leg.awayTeam}`,
+    domaci: leg.homeTeam,
+    hoste: leg.awayTeam,
     tipovanyTymHrac: tippedTeam,
     souper: opponentTeam,
     doporucenyTip: leg.recommendedPick,
-    casVykonu: leg.kickoffTime,
+    trh: leg.marketLabel,
+    casZapasu: leg.kickoffTime,
     kurzBetano: leg.betanoOdds,
     prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
     aiPravdepodobnostPct: leg.aiProbability,
     valuePct: leg.valueScore,
-    formaDomaci: leg.formHome?.join('-') ?? 'neuvedena',
-    formaHoste: leg.formAway?.join('-') ?? 'neuvedena',
+    formaDomaciPoslednich5: leg.formHome?.join('-') ?? 'neuvedena',
+    formaHostePoslednich5: leg.formAway?.join('-') ?? 'neuvedena',
     vzajemnaBilance: leg.h2hSummary ?? 'neuvedena',
   };
 
   const prompt = [
-    `Dnešní datum: ${todayIso}. Použij Google Search (google_search) k ověření aktuálních zpráv o posledních zápasech, sériích, zraněních a absencích obou soupeřů.`,
-    `Napiš česky stručné a věcné odůvodnění pro tento konkrétní zápas přesně v této tříodstavcové struktuře (bez markdown hvězdiček a nadpisů):`,
+    `Dnešní datum: ${todayIso}.`,
+    `Na základě dodaných dat zápasu a tvých znalostí o týmech/hráčích, jejich herním stylu, výhodě domácího prostředí a vzájemné síle napiš stručné, věcné české zdůvodnění přesně v této tříodstavcové struktuře (čistý text bez markdown hvězdiček a nadpisů):`,
     ``,
-    `Aktuální forma ${tippedTeam}: konkrétní poslední výsledky, série, klíčové absence/zranění nebo herní výhoda.`,
+    `Aktuální forma / herní styl ${tippedTeam}: zhodnoť dodanou bilanci, herní styl, klíčové přednosti nebo výhodu domácího prostředí/povrchu.`,
     ``,
-    `Síla soupeře ${opponentTeam}: proč má soupeř takový kurz, jeho poslední výsledek, absence nebo vzájemná bilance.`,
+    `Síla soupeře ${opponentTeam}: vysvětli, proč má soupeř takový kurz, jaké má slabiny nebo jaká je vzájemná bilance a poměr sil.`,
     ``,
-    `Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana (${leg.betanoOdds.toFixed(2)}) reálnou hodnotu (Value ${leg.valueScore.toFixed(1)} %) oproti průměru trhu (${(leg.marketAvgOdds ?? leg.betanoOdds).toFixed(2)}).`,
+    `Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana (${leg.betanoOdds.toFixed(2)}) reálnou hodnotu (Value ${leg.valueScore.toFixed(1)} %) oproti průměru trhu (${(leg.marketAvgOdds ?? leg.betanoOdds).toFixed(2)}) a odhadované pravděpodobnosti (${leg.aiProbability.toFixed(1)} %).`,
     ``,
     `Data zápasu: ${JSON.stringify(matchContext)}`,
   ].join('\n');
@@ -121,7 +124,7 @@ export async function fetchSingleMatchReasoning(
       system_instruction: {
         parts: [
           {
-            text: 'Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Vždy přesně dodrž tříodstavcovou šablonu (Aktuální forma ..., Síla soupeře ..., Verdikt k tiketu:) jako čistý text bez markdownu.',
+            text: 'Jsi precizní sportovní analytik. Píšeš výhradně česky, stručně, věcně a bez klišé. Vycházíš ze zadaných kurzových a statistických dat a ze svých znalostí o sportovním stylu a síle týmů/hráčů. Vždy dodrž přesně tříodstavcovou šablonu (Aktuální forma / herní styl ..., Síla soupeře ..., Verdikt k tiketu:) jako čistý text bez markdownu.',
           },
         ],
       },
@@ -131,7 +134,6 @@ export async function fetchSingleMatchReasoning(
           parts: [{ text: prompt }],
         },
       ],
-      tools: [{ google_search: {} }],
     }),
   });
 

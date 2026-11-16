@@ -233,7 +233,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              Pokud zadáte vlastní klíč z Google AI Studio, aplikace vyhledá aktuální formu, zranění a zdůvodnění Value přímo v prohlížeči (Google Search grounding). Bez klíče se zobrazí čistý statistický přehled.
+              Pokud zadáte vlastní klíč z Google AI Studio, zobrazí se u zápasů na tiketu tlačítko „Zobrazit AI analýzu“ (Gemini 3.8 Flash). Bez klíče se zobrazí čistý statistický přehled.
             </p>
             <input
               id="gemini-api-key"
