@@ -16,6 +16,7 @@ import { CustomMatchModal } from './components/CustomMatchModal';
 const DEFAULT_SETTINGS: AppSettings = {
   theOddsApiKey: '',
   apiSportsKey: '',
+  geminiApiKey: '',
   demoMode: false,
   initialBankroll: 10000,
 };
@@ -249,6 +250,7 @@ export default function App() {
           <TicketGenerator
             matches={activeMatches}
             currentBankroll={currentBankroll}
+            geminiApiKey={settings.geminiApiKey ?? ''}
             onSaveTicket={handleSaveTicket}
             onOpenBetano={handleOpenBetano}
             onOpenCustomMatchModal={() => setIsCustomModalOpen(true)}

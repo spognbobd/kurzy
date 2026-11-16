@@ -30,7 +30,6 @@ import {
   generateOptimalTicket,
 } from '../utils/analyticsEngine';
 import {
-  buildLocalFallbackReasoning,
   fetchTicketLegsReasoning,
   getLegReasonCacheKey,
   loadCachedLegReasons,
@@ -40,6 +39,7 @@ import {
 interface TicketGeneratorProps {
   matches: MatchAnalysis[];
   currentBankroll: number;
+  geminiApiKey: string;
   onSaveTicket: (ticket: Ticket) => void;
   onOpenBetano: (homeTeam: string, awayTeam: string, recommendedPick?: string) => void;
   onOpenCustomMatchModal: () => void;
@@ -117,9 +117,45 @@ const RISK_BADGE_STYLES: Record<EstimatedRiskBadge, { container: string; text: s
   },
 };
 
+function renderFormattedGeminiReasoning(text: string) {
+  const paragraphs = text
+    .split(/\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="mt-2 space-y-2 text-xs leading-relaxed text-slate-300">
+      {paragraphs.map((para, idx) => {
+        const colonIdx = para.indexOf(':');
+        const hasKnownPrefix =
+          colonIdx > 0 &&
+          /^(Aktuální forma|Síla soupeře|Verdikt k tiketu)/i.test(para.slice(0, colonIdx));
+
+        if (!hasKnownPrefix) {
+          return <p key={idx}>{para}</p>;
+        }
+
+        const label = para.slice(0, colonIdx + 1);
+        const body = para.slice(colonIdx + 1).trim();
+        const isVerdict = /^Verdikt k tiketu/i.test(label);
+
+        return (
+          <p key={idx}>
+            <span className={`font-semibold ${isVerdict ? 'text-emerald-300' : 'text-slate-100'}`}>
+              {label}
+            </span>{' '}
+            <span>{body}</span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   matches,
   currentBankroll,
+  geminiApiKey,
   onSaveTicket,
   onOpenBetano,
   onOpenCustomMatchModal,
@@ -153,6 +189,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [loadingReasonKeys, setLoadingReasonKeys] = useState<Record<string, boolean>>({});
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiRefreshNonce, setAiRefreshNonce] = useState(0);
+  const lastHandledNonceRef = React.useRef(0);
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
@@ -176,16 +213,22 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     }
   }, [generated]);
 
+  const trimmedGeminiKey = geminiApiKey.trim();
+  const hasGeminiKey = trimmedGeminiKey.length > 0;
+
   useEffect(() => {
-    if (!generated || generated.legs.length === 0) {
+    const forceRefresh = aiRefreshNonce !== lastHandledNonceRef.current;
+    lastHandledNonceRef.current = aiRefreshNonce;
+
+    if (!hasGeminiKey || !generated || generated.legs.length === 0) {
       setLoadingReasonKeys({});
+      setAiError(null);
       return;
     }
 
-    const forceRefresh = aiRefreshNonce > 0;
     const legsToFetch = forceRefresh
       ? generated.legs
-      : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg)]);
+      : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)]);
 
     if (legsToFetch.length === 0) {
       setLoadingReasonKeys({});
@@ -196,20 +239,20 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     const controller = new AbortController();
     const pendingKeys: Record<string, boolean> = {};
     legsToFetch.forEach((leg) => {
-      pendingKeys[getLegReasonCacheKey(leg)] = true;
+      pendingKeys[getLegReasonCacheKey(leg, trimmedGeminiKey)] = true;
     });
     setLoadingReasonKeys((prev) => ({ ...prev, ...pendingKeys }));
     setAiError(null);
 
-    void fetchTicketLegsReasoning(legsToFetch, controller.signal)
-      .then((res) => {
+    void fetchTicketLegsReasoning(legsToFetch, trimmedGeminiKey, controller.signal)
+      .then((reasonsMap) => {
         if (controller.signal.aborted) return;
         setAiReasons((prev) => {
           const next = { ...prev };
           legsToFetch.forEach((leg) => {
-            const text = res.reasons[leg.matchId];
+            const text = reasonsMap[leg.matchId];
             if (text && text.trim()) {
-              next[getLegReasonCacheKey(leg)] = text.trim();
+              next[getLegReasonCacheKey(leg, trimmedGeminiKey)] = text.trim();
             }
           });
           saveCachedLegReasons(next);
@@ -219,7 +262,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       .catch((err) => {
         if (controller.signal.aborted) return;
         const message =
-          err instanceof Error ? err.message : 'Nepodařilo se načíst zdůvodnění z Gemini AI.';
+          err instanceof Error ? err.message : 'Nepodařilo se načíst zdůvodnění z Gemini API.';
         setAiError(message);
       })
       .finally(() => {
@@ -227,7 +270,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
         setLoadingReasonKeys((prev) => {
           const next = { ...prev };
           legsToFetch.forEach((leg) => {
-            delete next[getLegReasonCacheKey(leg)];
+            delete next[getLegReasonCacheKey(leg, trimmedGeminiKey)];
           });
           return next;
         });
@@ -236,7 +279,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     return () => {
       controller.abort();
     };
-  }, [generated, aiRefreshNonce]);
+  }, [generated, trimmedGeminiKey, hasGeminiKey, aiRefreshNonce]);
 
   const eligibleMatchesCount = useMemo(
     () =>
@@ -303,10 +346,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       riskLevel: activeMode.riskLabel,
       legs: generated.legs.map((leg) => ({
         ...leg,
-        reasoning:
-          aiReasons[getLegReasonCacheKey(leg)] ??
-          leg.reasoning ??
-          buildLocalFallbackReasoning(leg),
+        reasoning: hasGeminiKey
+          ? aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)] ?? leg.reasoning
+          : leg.reasoning,
       })),
       totalOdds: generated.totalOdds,
       totalProbability: generated.totalProbability,
@@ -754,10 +796,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               {/* Legs List */}
               <div className="mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
-                  const reasonKey = getLegReasonCacheKey(leg);
-                  const geminiReason = aiReasons[reasonKey];
-                  const isLoadingReason = Boolean(loadingReasonKeys[reasonKey]);
-                  const fallbackReason = leg.reasoning || buildLocalFallbackReasoning(leg);
+                  const reasonKey = hasGeminiKey
+                    ? getLegReasonCacheKey(leg, trimmedGeminiKey)
+                    : '';
+                  const geminiReason = hasGeminiKey ? aiReasons[reasonKey] : undefined;
+                  const isLoadingReason = hasGeminiKey && Boolean(loadingReasonKeys[reasonKey]);
 
                   return (
                     <div key={leg.matchId} className="flex flex-col gap-3 p-4">
@@ -810,47 +853,46 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         </div>
                       </div>
 
-                      {/* Concise 2-3 Sentence Gemini AI Reasoning Directly Below Odds & Betano Row */}
-                      <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
-                        <div className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
-                            <Sparkles className="h-3 w-3 shrink-0" />
-                            <span>
-                              {geminiReason
-                                ? 'Gemini AI analýza zápasu'
-                                : isLoadingReason
-                                ? 'Gemini AI hodnotí formu, absence a Value...'
-                                : 'Analytické zdůvodnění'}
+                      {/* Gemini AI Grounded Reasoning (only rendered when Gemini API key is set) */}
+                      {hasGeminiKey && (isLoadingReason || geminiReason) && (
+                        <div className="rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5">
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                              <Sparkles className="h-3 w-3 shrink-0" />
+                              <span>
+                                {geminiReason
+                                  ? 'Gemini 2.5 Flash · Google Search analýza'
+                                  : 'Gemini AI vyhledává aktuální formu, zranění a Value...'}
+                              </span>
                             </span>
-                          </span>
-                        </div>
-
-                        {isLoadingReason && !geminiReason ? (
-                          <div className="mt-2 space-y-1.5" aria-busy="true">
-                            <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
-                            <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
                           </div>
-                        ) : (
-                          <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
-                            {geminiReason || fallbackReason}
-                          </p>
-                        )}
-                      </div>
+
+                          {isLoadingReason && !geminiReason ? (
+                            <div className="mt-2 space-y-1.5" aria-busy="true">
+                              <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                              <div className="h-3 w-5/6 animate-pulse rounded bg-slate-800" />
+                              <div className="h-3 w-3/4 animate-pulse rounded bg-slate-800" />
+                            </div>
+                          ) : (
+                            geminiReason && renderFormattedGeminiReasoning(geminiReason)
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
 
-              {aiError && (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
-                  <span>{aiError} (Zobrazeno lokální statistické zdůvodnění.)</span>
+              {hasGeminiKey && aiError && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-200">
+                  <span>{aiError}</span>
                   <button
                     type="button"
                     onClick={() => setAiRefreshNonce((n) => n + 1)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/25"
+                    className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 font-semibold text-rose-100 hover:bg-rose-500/25"
                   >
                     <RefreshCw className="h-3 w-3" />
-                    <span>Zkusit Gemini znovu</span>
+                    <span>Zkusit znovu</span>
                   </button>
                 </div>
               )}

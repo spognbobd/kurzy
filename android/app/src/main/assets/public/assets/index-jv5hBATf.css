@@ -70,6 +70,7 @@
     --color-emerald-600: oklch(59.6% .145 163.225);
     --color-emerald-950: oklch(26.2% .051 172.552);
     --color-sky-300: oklch(82.8% .111 230.318);
+    --color-rose-100: oklch(94.1% .03 12.58);
     --color-rose-200: oklch(89.2% .058 10.001);
     --color-rose-300: oklch(81% .117 11.638);
     --color-rose-400: oklch(71.2% .194 13.428);
@@ -719,16 +720,20 @@
     width: calc(var(--spacing) * 3.5);
   }
 
+  .w-3\/4 {
+    width: 75%;
+  }
+
   .w-4 {
     width: calc(var(--spacing) * 4);
   }
 
-  .w-4\/5 {
-    width: 80%;
-  }
-
   .w-5 {
     width: calc(var(--spacing) * 5);
+  }
+
+  .w-5\/6 {
+    width: 83.3333%;
   }
 
   .w-8 {
@@ -1678,10 +1683,6 @@
     white-space: nowrap;
   }
 
-  .text-amber-100 {
-    color: var(--color-amber-100);
-  }
-
   .text-amber-200 {
     color: var(--color-amber-200);
   }
@@ -1704,6 +1705,10 @@
 
   .text-emerald-400 {
     color: var(--color-emerald-400);
+  }
+
+  .text-rose-100 {
+    color: var(--color-rose-100);
   }
 
   .text-rose-200 {
@@ -1922,16 +1927,6 @@
 
     .hover\:bg-\[\#090D16\]:hover {
       background-color: #090d16;
-    }
-
-    .hover\:bg-amber-500\/25:hover {
-      background-color: #f99c0040;
-    }
-
-    @supports (color: color-mix(in lab, red, red)) {
-      .hover\:bg-amber-500\/25:hover {
-        background-color: color-mix(in oklab, var(--color-amber-500) 25%, transparent);
-      }
     }
 
     .hover\:bg-emerald-400:hover {

@@ -1,9 +1,15 @@
 import { TicketLeg } from '../types/betting';
 
-const SESSION_CACHE_KEY = 'betedge_gemini_leg_reasons_v1';
+const SESSION_CACHE_KEY = 'betedge_gemini_leg_reasons_v2';
 
-export function getLegReasonCacheKey(leg: TicketLeg): string {
-  return `${leg.matchId}::${leg.recommendedPick}::${leg.betanoOdds.toFixed(2)}`;
+function getKeyFingerprint(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  if (!trimmed) return '';
+  return `${trimmed.slice(0, 6)}:${trimmed.length}`;
+}
+
+export function getLegReasonCacheKey(leg: TicketLeg, apiKey: string): string {
+  return `${getKeyFingerprint(apiKey)}::${leg.matchId}::${leg.recommendedPick}::${leg.betanoOdds.toFixed(2)}`;
 }
 
 export function loadCachedLegReasons(): Record<string, string> {
@@ -30,73 +36,191 @@ export function saveCachedLegReasons(reasons: Record<string, string>): void {
   }
 }
 
-export interface GeminiTicketReasoningResponse {
-  reasons: Record<string, string>;
-  grounded: boolean;
-  model: string;
+export function resolveTippedAndOpponent(leg: TicketLeg): {
+  tippedTeam: string;
+  opponentTeam: string;
+} {
+  const cleanHome = leg.homeTeam.replace(/\(.*?\)/g, '').trim();
+  const cleanAway = leg.awayTeam.replace(/\(.*?\)/g, '').trim();
+  const pick = leg.recommendedPick.trim();
+  const stripped = pick
+    .replace(/^výhra\s+/i, '')
+    .replace(/\(.*?\)/g, '')
+    .trim()
+    .toLowerCase();
+
+  const isAway =
+    /\(2\)/.test(pick) ||
+    (Boolean(cleanAway) &&
+      Boolean(stripped) &&
+      (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped)));
+
+  if (isAway) {
+    return { tippedTeam: cleanAway || leg.awayTeam, opponentTeam: cleanHome || leg.homeTeam };
+  }
+  return { tippedTeam: cleanHome || leg.homeTeam, opponentTeam: cleanAway || leg.awayTeam };
+}
+
+interface GeminiRestResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+  };
+}
+
+interface ParsedReasonItem {
+  matchId?: string;
+  reasoning?: string;
+}
+
+function extractJsonReasons(rawText: string): Record<string, string> {
+  const cleaned = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const tryParse = (text: string): Record<string, string> => {
+    const parsed = JSON.parse(text) as {
+      reasons?: ParsedReasonItem[] | Record<string, string>;
+    };
+    const out: Record<string, string> = {};
+    if (parsed && Array.isArray(parsed.reasons)) {
+      for (const item of parsed.reasons) {
+        if (
+          item &&
+          typeof item.matchId === 'string' &&
+          typeof item.reasoning === 'string' &&
+          item.reasoning.trim()
+        ) {
+          out[item.matchId] = item.reasoning.trim();
+        }
+      }
+    } else if (parsed && parsed.reasons && typeof parsed.reasons === 'object') {
+      for (const [k, v] of Object.entries(parsed.reasons)) {
+        if (typeof v === 'string' && v.trim()) {
+          out[k] = v.trim();
+        }
+      }
+    }
+    return out;
+  };
+
+  try {
+    return tryParse(cleaned);
+  } catch {
+    const startIdx = cleaned.indexOf('{');
+    const endIdx = cleaned.lastIndexOf('}');
+    if (startIdx >= 0 && endIdx > startIdx) {
+      try {
+        return tryParse(cleaned.slice(startIdx, endIdx + 1));
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
 }
 
 export async function fetchTicketLegsReasoning(
   legs: TicketLeg[],
+  geminiApiKey: string,
   signal?: AbortSignal
-): Promise<GeminiTicketReasoningResponse> {
-  const response = await fetch('/api/gemini/ticket-reasoning', {
+): Promise<Record<string, string>> {
+  const trimmedKey = geminiApiKey.trim();
+  if (!trimmedKey || legs.length === 0) return {};
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const legDescriptors = legs.map((leg) => {
+    const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
+    return {
+      matchId: leg.matchId,
+      sport: leg.sport,
+      soutez: leg.league,
+      zapas: `${leg.homeTeam} vs. ${leg.awayTeam}`,
+      tipovanyTymHrac: tippedTeam,
+      souper: opponentTeam,
+      doporucenyTip: leg.recommendedPick,
+      casVykonu: leg.kickoffTime,
+      kurzBetano: leg.betanoOdds,
+      prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
+      aiPravdepodobnostPct: leg.aiProbability,
+      valuePct: leg.valueScore,
+      formaDomaci: leg.formHome?.join('-') ?? 'neuvedena',
+      formaHoste: leg.formAway?.join('-') ?? 'neuvedena',
+      vzajemnaBilance: leg.h2hSummary ?? 'neuvedena',
+    };
+  });
+
+  const prompt = [
+    `Dnešní datum: ${todayIso}. Použij Google Search (google_search) k ověření aktuálních zpráv o posledních zápasech, sériích, zraněních a absencích obou soupeřů.`,
+    `Pro KAŽDÝ zápas ze seznamu níže napiš česky stručné a věcné odůvodnění přesně v této struktuře se třemi odstavci:`,
+    `Aktuální forma [tipovanyTymHrac]: konkrétní poslední výsledky, série, klíčové absence/zranění nebo herní výhoda.`,
+    ``,
+    `Síla soupeře [souper]: proč má soupeř takový kurz, jeho poslední výsledek, absence nebo vzájemná bilance.`,
+    ``,
+    `Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana reálnou hodnotu (Value) oproti průměru trhu a šanci.`,
+    `Nahraď [tipovanyTymHrac] a [souper] konkrétními jmény z dat zápasu (bez hranatých závorek). Nepiš žádnou obecnou omáčku ani markdown nadpisy.`,
+    `Vrať VÝHRADNĚ čistý JSON objekt bez markdown bloků ve tvaru: {"reasons":[{"matchId":"...","reasoning":"Aktuální forma ...:\\n\\nSíla soupeře ...:\\n\\nVerdikt k tiketu: ..."}]}`,
+    `Zápasy: ${JSON.stringify(legDescriptors)}`,
+  ].join('\n');
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+    trimmedKey
+  )}`;
+
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
     body: JSON.stringify({
-      legs: legs.map((leg) => ({
-        matchId: leg.matchId,
-        sport: leg.sport,
-        league: leg.league,
-        homeTeam: leg.homeTeam,
-        awayTeam: leg.awayTeam,
-        kickoffTime: leg.kickoffTime,
-        recommendedPick: leg.recommendedPick,
-        marketLabel: leg.marketLabel,
-        betanoOdds: leg.betanoOdds,
-        marketAvgOdds: leg.marketAvgOdds,
-        aiProbability: leg.aiProbability,
-        valueScore: leg.valueScore,
-        formHome: leg.formHome,
-        formAway: leg.formAway,
-        h2hSummary: leg.h2hSummary,
-      })),
+      system_instruction: {
+        parts: [
+          {
+            text: 'Jsi precizní sportovní analytik. Píšeš výhradně česky, věcně a bez klišé. Vždy dodržuješ přesně zadanou tříodstavcovou šablonu (Aktuální forma ..., Síla soupeře ..., Verdikt k tiketu:) a vracíš validní JSON.',
+          },
+        ],
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }],
+        },
+      ],
+      tools: [{ google_search: {} }],
     }),
   });
 
-  const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    throw new Error('Serverová Gemini AI služba není v tomto prostředí dostupná.');
-  }
-
-  const data = (await response.json()) as Partial<GeminiTicketReasoningResponse> & {
-    error?: string;
-  };
+  const payload = (await response.json()) as GeminiRestResponse;
 
   if (!response.ok) {
-    throw new Error(data.error || `Chyba Gemini API (${response.status}).`);
+    const errMsg = payload.error?.message || `HTTP ${response.status}`;
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      throw new Error(`Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
+    }
+    if (response.status === 429) {
+      throw new Error('Dočasně vyčerpána kvóta Gemini API (429). Zkuste to za chvíli znovu.');
+    }
+    throw new Error(`Gemini REST API chyba: ${errMsg}`);
   }
 
-  return {
-    reasons: data.reasons ?? {},
-    grounded: Boolean(data.grounded),
-    model: data.model ?? 'gemini-4-hydrogen',
-  };
-}
+  const rawText =
+    payload.candidates?.[0]?.content?.parts
+      ?.map((p) => p.text ?? '')
+      .join('\n')
+      .trim() ?? '';
 
-export function buildLocalFallbackReasoning(leg: TicketLeg): string {
-  const formHome = leg.formHome?.join('-') ?? 'stabilní';
-  const formAway = leg.formAway?.join('-') ?? 'kolísavá';
-  const marketAvg = leg.marketAvgOdds ?? leg.betanoOdds;
-  const valueText =
-    leg.valueScore > 0
-      ? `nabízí kladné Value +${leg.valueScore.toFixed(1).replace('.', ',')} % oproti tržnímu průměru ${marketAvg.toFixed(2)}`
-      : `odpovídá férové hladině trhu (${marketAvg.toFixed(2)})`;
-  const venueNote =
-    leg.sport === 'Tenis' || leg.sport === 'MMA'
-      ? 'Výkonnostní profil a aktuální herní pohoda hrají ve prospěch zvoleného tipu.'
-      : `Domácí prostředí pro ${leg.homeTeam} a vzájemná bilance (${leg.h2hSummary || 'vyrovnaná'}) podporují výsledek bez nutnosti riskovat.`;
-
-  return `Aktuální bilance posledních 5 zápasů ukazuje formu ${formHome} (${leg.homeTeam}) proti ${formAway} (${leg.awayTeam}), bez potvrzených mimořádných absencí v dostupných statistikách. ${venueNote} Betano kurz ${leg.betanoOdds.toFixed(2)} při odhadované šanci ${leg.aiProbability.toFixed(1).replace('.', ',')} % ${valueText}.`;
+  const parsed = extractJsonReasons(rawText);
+  if (Object.keys(parsed).length === 0) {
+    throw new Error('Gemini API nevrátilo čitelné zdůvodnění zápasů.');
+  }
+  return parsed;
 }

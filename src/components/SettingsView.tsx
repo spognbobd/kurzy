@@ -35,6 +35,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
+  const [geminiKey, setGeminiKey] = useState(settings.geminiApiKey ?? '');
   const [bankroll, setBankroll] = useState<number>(settings.initialBankroll);
   const [demoMode, setDemoMode] = useState(settings.demoMode);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -42,6 +43,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     setOddsKey(settings.theOddsApiKey);
     setSportsKey(settings.apiSportsKey);
+    setGeminiKey(settings.geminiApiKey ?? '');
     setBankroll(settings.initialBankroll);
     setDemoMode(settings.demoMode);
   }, [settings]);
@@ -50,12 +52,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     const trimmedOdds = oddsKey.trim();
     const trimmedSports = sportsKey.trim();
+    const trimmedGemini = geminiKey.trim();
     const safeBankroll = Math.max(5, Math.round(bankroll || 5));
     setBankroll(safeBankroll);
 
     onUpdateSettings({
       theOddsApiKey: trimmedOdds,
       apiSportsKey: trimmedSports,
+      geminiApiKey: trimmedGemini,
       demoMode,
       initialBankroll: safeBankroll,
     });
@@ -70,12 +74,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleTestAndLoad = async () => {
     const trimmedOdds = oddsKey.trim();
     const trimmedSports = sportsKey.trim();
+    const trimmedGemini = geminiKey.trim();
     const safeBankroll = Math.max(5, Math.round(bankroll || 5));
     setBankroll(safeBankroll);
     setDemoMode(false);
     onUpdateSettings({
       theOddsApiKey: trimmedOdds,
       apiSportsKey: trimmedSports,
+      geminiApiKey: trimmedGemini,
       demoMode: false,
       initialBankroll: safeBankroll,
     });
@@ -144,6 +150,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 onUpdateSettings({
                   theOddsApiKey: oddsKey.trim(),
                   apiSportsKey: sportsKey.trim(),
+                  geminiApiKey: geminiKey.trim(),
                   demoMode: next,
                   initialBankroll: Math.max(5, Math.round(bankroll || 5)),
                 });
@@ -205,6 +212,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               value={sportsKey}
               onChange={(e) => setSportsKey(e.target.value)}
               placeholder="Volitelný x-apisports-key..."
+              className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+            />
+          </div>
+
+          {/* Gemini AI Key */}
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="gemini-api-key" className="block text-sm font-semibold text-slate-100">
+                Gemini API klíč (volitelné AI zdůvodnění tiketů)
+              </label>
+              <span
+                className={`inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold ${
+                  geminiKey.trim()
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-slate-700 bg-[#090D16] text-slate-400'
+                }`}
+              >
+                {geminiKey.trim() ? 'Aktivní (Gemini 2.5 Flash)' : 'Volitelné (vypnuto)'}
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Pokud zadáte vlastní klíč z Google AI Studio, aplikace vyhledá aktuální formu, zranění a zdůvodnění Value přímo v prohlížeči (Google Search grounding). Bez klíče se zobrazí čistý statistický přehled.
+            </p>
+            <input
+              id="gemini-api-key"
+              type="password"
+              autoComplete="off"
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder="Volitelný Gemini API klíč (AIza...)..."
               className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>

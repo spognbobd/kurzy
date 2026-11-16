@@ -14891,9 +14891,14 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 	});
 };
 // src/services/geminiReasoningService.ts
-var SESSION_CACHE_KEY = "betedge_gemini_leg_reasons_v1";
-function getLegReasonCacheKey(leg) {
-	return `${leg.matchId}::${leg.recommendedPick}::${leg.betanoOdds.toFixed(2)}`;
+var SESSION_CACHE_KEY = "betedge_gemini_leg_reasons_v2";
+function getKeyFingerprint$1(apiKey) {
+	const trimmed = apiKey.trim();
+	if (!trimmed) return "";
+	return `${trimmed.slice(0, 6)}:${trimmed.length}`;
+}
+function getLegReasonCacheKey(leg, apiKey) {
+	return `${getKeyFingerprint$1(apiKey)}::${leg.matchId}::${leg.recommendedPick}::${leg.betanoOdds.toFixed(2)}`;
 }
 function loadCachedLegReasons() {
 	if (typeof window === "undefined") return {};
@@ -14913,45 +14918,105 @@ function saveCachedLegReasons(reasons) {
 		window.sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(reasons));
 	} catch {}
 }
-async function fetchTicketLegsReasoning(legs, signal) {
-	const response = await fetch("/api/gemini/ticket-reasoning", {
+function resolveTippedAndOpponent(leg) {
+	const cleanHome = leg.homeTeam.replace(/\(.*?\)/g, "").trim();
+	const cleanAway = leg.awayTeam.replace(/\(.*?\)/g, "").trim();
+	const pick = leg.recommendedPick.trim();
+	const stripped = pick.replace(/^výhra\s+/i, "").replace(/\(.*?\)/g, "").trim().toLowerCase();
+	if (/\(2\)/.test(pick) || Boolean(cleanAway) && Boolean(stripped) && (cleanAway.toLowerCase() === stripped || cleanAway.toLowerCase().includes(stripped))) return {
+		tippedTeam: cleanAway || leg.awayTeam,
+		opponentTeam: cleanHome || leg.homeTeam
+	};
+	return {
+		tippedTeam: cleanHome || leg.homeTeam,
+		opponentTeam: cleanAway || leg.awayTeam
+	};
+}
+function extractJsonReasons(rawText) {
+	const cleaned = rawText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+	const tryParse = (text) => {
+		const parsed = JSON.parse(text);
+		const out = {};
+		if (parsed && Array.isArray(parsed.reasons)) {
+			for (const item of parsed.reasons) if (item && typeof item.matchId === "string" && typeof item.reasoning === "string" && item.reasoning.trim()) out[item.matchId] = item.reasoning.trim();
+		} else if (parsed && parsed.reasons && typeof parsed.reasons === "object") {
+			for (const [k, v] of Object.entries(parsed.reasons)) if (typeof v === "string" && v.trim()) out[k] = v.trim();
+		}
+		return out;
+	};
+	try {
+		return tryParse(cleaned);
+	} catch {
+		const startIdx = cleaned.indexOf("{");
+		const endIdx = cleaned.lastIndexOf("}");
+		if (startIdx >= 0 && endIdx > startIdx) try {
+			return tryParse(cleaned.slice(startIdx, endIdx + 1));
+		} catch {
+			return {};
+		}
+		return {};
+	}
+}
+async function fetchTicketLegsReasoning(legs, geminiApiKey, signal) {
+	const trimmedKey = geminiApiKey.trim();
+	if (!trimmedKey || legs.length === 0) return {};
+	const todayIso = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+	const legDescriptors = legs.map((leg) => {
+		const { tippedTeam, opponentTeam } = resolveTippedAndOpponent(leg);
+		return {
+			matchId: leg.matchId,
+			sport: leg.sport,
+			soutez: leg.league,
+			zapas: `${leg.homeTeam} vs. ${leg.awayTeam}`,
+			tipovanyTymHrac: tippedTeam,
+			souper: opponentTeam,
+			doporucenyTip: leg.recommendedPick,
+			casVykonu: leg.kickoffTime,
+			kurzBetano: leg.betanoOdds,
+			prumernyKurzTrhu: leg.marketAvgOdds ?? leg.betanoOdds,
+			aiPravdepodobnostPct: leg.aiProbability,
+			valuePct: leg.valueScore,
+			formaDomaci: leg.formHome?.join("-") ?? "neuvedena",
+			formaHoste: leg.formAway?.join("-") ?? "neuvedena",
+			vzajemnaBilance: leg.h2hSummary ?? "neuvedena"
+		};
+	});
+	const prompt = [
+		`Dnešní datum: ${todayIso}. Použij Google Search (google_search) k ověření aktuálních zpráv o posledních zápasech, sériích, zraněních a absencích obou soupeřů.`,
+		`Pro KAŽDÝ zápas ze seznamu níže napiš česky stručné a věcné odůvodnění přesně v této struktuře se třemi odstavci:`,
+		`Aktuální forma [tipovanyTymHrac]: konkrétní poslední výsledky, série, klíčové absence/zranění nebo herní výhoda.`,
+		``,
+		`Síla soupeře [souper]: proč má soupeř takový kurz, jeho poslední výsledek, absence nebo vzájemná bilance.`,
+		``,
+		`Verdikt k tiketu: 1–2 věty, proč má nabízený kurz Betana reálnou hodnotu (Value) oproti průměru trhu a šanci.`,
+		`Nahraď [tipovanyTymHrac] a [souper] konkrétními jmény z dat zápasu (bez hranatých závorek). Nepiš žádnou obecnou omáčku ani markdown nadpisy.`,
+		`Vrať VÝHRADNĚ čistý JSON objekt bez markdown bloků ve tvaru: {"reasons":[{"matchId":"...","reasoning":"Aktuální forma ...:\\n\\nSíla soupeře ...:\\n\\nVerdikt k tiketu: ..."}]}`,
+		`Zápasy: ${JSON.stringify(legDescriptors)}`
+	].join("\n");
+	const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(trimmedKey)}`;
+	const response = await fetch(endpoint, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		signal,
-		body: JSON.stringify({ legs: legs.map((leg) => ({
-			matchId: leg.matchId,
-			sport: leg.sport,
-			league: leg.league,
-			homeTeam: leg.homeTeam,
-			awayTeam: leg.awayTeam,
-			kickoffTime: leg.kickoffTime,
-			recommendedPick: leg.recommendedPick,
-			marketLabel: leg.marketLabel,
-			betanoOdds: leg.betanoOdds,
-			marketAvgOdds: leg.marketAvgOdds,
-			aiProbability: leg.aiProbability,
-			valueScore: leg.valueScore,
-			formHome: leg.formHome,
-			formAway: leg.formAway,
-			h2hSummary: leg.h2hSummary
-		})) })
+		body: JSON.stringify({
+			system_instruction: { parts: [{ text: "Jsi precizní sportovní analytik. Píšeš výhradně česky, věcně a bez klišé. Vždy dodržuješ přesně zadanou tříodstavcovou šablonu (Aktuální forma ..., Síla soupeře ..., Verdikt k tiketu:) a vracíš validní JSON." }] },
+			contents: [{
+				role: "user",
+				parts: [{ text: prompt }]
+			}],
+			tools: [{ google_search: {} }]
+		})
 	});
-	if (!(response.headers.get("content-type") || "").includes("application/json")) throw new Error("Serverová Gemini AI služba není v tomto prostředí dostupná.");
-	const data = await response.json();
-	if (!response.ok) throw new Error(data.error || `Chyba Gemini API (${response.status}).`);
-	return {
-		reasons: data.reasons ?? {},
-		grounded: Boolean(data.grounded),
-		model: data.model ?? "gemini-4-hydrogen"
-	};
-}
-function buildLocalFallbackReasoning(leg) {
-	const formHome = leg.formHome?.join("-") ?? "stabilní";
-	const formAway = leg.formAway?.join("-") ?? "kolísavá";
-	const marketAvg = leg.marketAvgOdds ?? leg.betanoOdds;
-	const valueText = leg.valueScore > 0 ? `nabízí kladné Value +${leg.valueScore.toFixed(1).replace(".", ",")} % oproti tržnímu průměru ${marketAvg.toFixed(2)}` : `odpovídá férové hladině trhu (${marketAvg.toFixed(2)})`;
-	const venueNote = leg.sport === "Tenis" || leg.sport === "MMA" ? "Výkonnostní profil a aktuální herní pohoda hrají ve prospěch zvoleného tipu." : `Domácí prostředí pro ${leg.homeTeam} a vzájemná bilance (${leg.h2hSummary || "vyrovnaná"}) podporují výsledek bez nutnosti riskovat.`;
-	return `Aktuální bilance posledních 5 zápasů ukazuje formu ${formHome} (${leg.homeTeam}) proti ${formAway} (${leg.awayTeam}), bez potvrzených mimořádných absencí v dostupných statistikách. ${venueNote} Betano kurz ${leg.betanoOdds.toFixed(2)} při odhadované šanci ${leg.aiProbability.toFixed(1).replace(".", ",")} % ${valueText}.`;
+	const payload = await response.json();
+	if (!response.ok) {
+		const errMsg = payload.error?.message || `HTTP ${response.status}`;
+		if (response.status === 400 || response.status === 401 || response.status === 403) throw new Error(`Neplatný nebo zamítnutý Gemini API klíč (${errMsg}). Zkontrolujte ho v Nastavení.`);
+		if (response.status === 429) throw new Error("Dočasně vyčerpána kvóta Gemini API (429). Zkuste to za chvíli znovu.");
+		throw new Error(`Gemini REST API chyba: ${errMsg}`);
+	}
+	const parsed = extractJsonReasons(payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").trim() ?? "");
+	if (Object.keys(parsed).length === 0) throw new Error("Gemini API nevrátilo čitelné zdůvodnění zápasů.");
+	return parsed;
 }
 // src/components/TicketGenerator.tsx
 var ALL_SPORTS = [
@@ -15017,7 +15082,28 @@ var RISK_BADGE_STYLES = {
 		dot: "bg-rose-400"
 	}
 };
-var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
+function renderFormattedGeminiReasoning(text) {
+	const paragraphs = text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "mt-2 space-y-2 text-xs leading-relaxed text-slate-300",
+		children: paragraphs.map((para, idx) => {
+			const colonIdx = para.indexOf(":");
+			if (!(colonIdx > 0 && /^(Aktuální forma|Síla soupeře|Verdikt k tiketu)/i.test(para.slice(0, colonIdx)))) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: para }, idx);
+			const label = para.slice(0, colonIdx + 1);
+			const body = para.slice(colonIdx + 1).trim();
+			const isVerdict = /^Verdikt k tiketu/i.test(label);
+			return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+					className: `font-semibold ${isVerdict ? "text-emerald-300" : "text-slate-100"}`,
+					children: label
+				}),
+				" ",
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: body })
+			] }, idx);
+		})
+	});
+}
+var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, onOpenBetano, onOpenCustomMatchModal, onDeleteCustomMatch }) => {
 	const recommendedMinProb = (0, import_react.useMemo)(() => {
 		const validValueMatches = matches.filter((m) => m.valueScore >= 0);
 		if (validValueMatches.length === 0) return 55;
@@ -15038,6 +15124,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 	const [loadingReasonKeys, setLoadingReasonKeys] = (0, import_react.useState)({});
 	const [aiError, setAiError] = (0, import_react.useState)(null);
 	const [aiRefreshNonce, setAiRefreshNonce] = (0, import_react.useState)(0);
+	const lastHandledNonceRef = import_react.useRef(0);
 	(0, import_react.useEffect)(() => {
 		setMinMatchProbability(recommendedMinProb);
 		setVariationIndex(0);
@@ -15055,12 +15142,17 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 	(0, import_react.useEffect)(() => {
 		if (generated) setCustomStake(generated.recommendedStake);
 	}, [generated]);
+	const trimmedGeminiKey = geminiApiKey.trim();
+	const hasGeminiKey = trimmedGeminiKey.length > 0;
 	(0, import_react.useEffect)(() => {
-		if (!generated || generated.legs.length === 0) {
+		const forceRefresh = aiRefreshNonce !== lastHandledNonceRef.current;
+		lastHandledNonceRef.current = aiRefreshNonce;
+		if (!hasGeminiKey || !generated || generated.legs.length === 0) {
 			setLoadingReasonKeys({});
+			setAiError(null);
 			return;
 		}
-		const legsToFetch = aiRefreshNonce > 0 ? generated.legs : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg)]);
+		const legsToFetch = forceRefresh ? generated.legs : generated.legs.filter((leg) => !aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)]);
 		if (legsToFetch.length === 0) {
 			setLoadingReasonKeys({});
 			setAiError(null);
@@ -15069,34 +15161,34 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 		const controller = new AbortController();
 		const pendingKeys = {};
 		legsToFetch.forEach((leg) => {
-			pendingKeys[getLegReasonCacheKey(leg)] = true;
+			pendingKeys[getLegReasonCacheKey(leg, trimmedGeminiKey)] = true;
 		});
 		setLoadingReasonKeys((prev) => ({
 			...prev,
 			...pendingKeys
 		}));
 		setAiError(null);
-		fetchTicketLegsReasoning(legsToFetch, controller.signal).then((res) => {
+		fetchTicketLegsReasoning(legsToFetch, trimmedGeminiKey, controller.signal).then((reasonsMap) => {
 			if (controller.signal.aborted) return;
 			setAiReasons((prev) => {
 				const next = { ...prev };
 				legsToFetch.forEach((leg) => {
-					const text = res.reasons[leg.matchId];
-					if (text && text.trim()) next[getLegReasonCacheKey(leg)] = text.trim();
+					const text = reasonsMap[leg.matchId];
+					if (text && text.trim()) next[getLegReasonCacheKey(leg, trimmedGeminiKey)] = text.trim();
 				});
 				saveCachedLegReasons(next);
 				return next;
 			});
 		}).catch((err) => {
 			if (controller.signal.aborted) return;
-			const message = err instanceof Error ? err.message : "Nepodařilo se načíst zdůvodnění z Gemini AI.";
+			const message = err instanceof Error ? err.message : "Nepodařilo se načíst zdůvodnění z Gemini API.";
 			setAiError(message);
 		}).finally(() => {
 			if (controller.signal.aborted) return;
 			setLoadingReasonKeys((prev) => {
 				const next = { ...prev };
 				legsToFetch.forEach((leg) => {
-					delete next[getLegReasonCacheKey(leg)];
+					delete next[getLegReasonCacheKey(leg, trimmedGeminiKey)];
 				});
 				return next;
 			});
@@ -15104,7 +15196,12 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 		return () => {
 			controller.abort();
 		};
-	}, [generated, aiRefreshNonce]);
+	}, [
+		generated,
+		trimmedGeminiKey,
+		hasGeminiKey,
+		aiRefreshNonce
+	]);
 	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0).length, [
 		matches,
 		selectedSports,
@@ -15150,7 +15247,7 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 			riskLevel: activeMode.riskLabel,
 			legs: generated.legs.map((leg) => ({
 				...leg,
-				reasoning: aiReasons[getLegReasonCacheKey(leg)] ?? leg.reasoning ?? buildLocalFallbackReasoning(leg)
+				reasoning: hasGeminiKey ? aiReasons[getLegReasonCacheKey(leg, trimmedGeminiKey)] ?? leg.reasoning : leg.reasoning
 			})),
 			totalOdds: generated.totalOdds,
 			totalProbability: generated.totalProbability,
@@ -15594,10 +15691,9 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 								className: "mt-5 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]",
 								children: generated.legs.map((leg, idx) => {
-									const reasonKey = getLegReasonCacheKey(leg);
-									const geminiReason = aiReasons[reasonKey];
-									const isLoadingReason = Boolean(loadingReasonKeys[reasonKey]);
-									const fallbackReason = leg.reasoning || buildLocalFallbackReasoning(leg);
+									const reasonKey = hasGeminiKey ? getLegReasonCacheKey(leg, trimmedGeminiKey) : "";
+									const geminiReason = hasGeminiKey ? aiReasons[reasonKey] : void 0;
+									const isLoadingReason = hasGeminiKey && Boolean(loadingReasonKeys[reasonKey]);
 									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 										className: "flex flex-col gap-3 p-4",
 										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -15674,33 +15770,34 @@ var TicketGenerator = ({ matches, currentBankroll, onSaveTicket, onOpenBetano, o
 													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
 												})]
 											})]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										}), hasGeminiKey && (isLoadingReason || geminiReason) && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 											className: "rounded-xl border border-slate-800/80 bg-[#090D16] px-3.5 py-2.5",
 											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 												className: "flex items-center justify-between gap-2 text-[11px]",
 												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini AI analýza zápasu" : isLoadingReason ? "Gemini AI hodnotí formu, absence a Value..." : "Analytické zdůvodnění" })]
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini 2.5 Flash · Google Search analýza" : "Gemini AI vyhledává aktuální formu, zranění a Value..." })]
 												})
 											}), isLoadingReason && !geminiReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 												className: "mt-2 space-y-1.5",
 												"aria-busy": "true",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-4/5 animate-pulse rounded bg-slate-800" })]
-											}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-												className: "mt-1.5 text-xs leading-relaxed text-slate-300",
-												children: geminiReason || fallbackReason
-											})]
+												children: [
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-full animate-pulse rounded bg-slate-800" }),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-5/6 animate-pulse rounded bg-slate-800" }),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "h-3 w-3/4 animate-pulse rounded bg-slate-800" })
+												]
+											}) : geminiReason && renderFormattedGeminiReasoning(geminiReason)]
 										})]
 									}, leg.matchId);
 								})
 							}),
-							aiError && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [aiError, " (Zobrazeno lokální statistické zdůvodnění.)"] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							hasGeminiKey && aiError && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-200",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: aiError }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
 									onClick: () => setAiRefreshNonce((n) => n + 1),
-									className: "inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-500/25",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3 w-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zkusit Gemini znovu" })]
+									className: "inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 font-semibold text-rose-100 hover:bg-rose-500/25",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "h-3 w-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Zkusit znovu" })]
 								})]
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -16246,12 +16343,14 @@ var BankrollStats = ({ tickets, initialBankroll, onSettleTicket, onDeleteTicket,
 var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive, liveStatusMessage, liveError, lastUpdatedAt, remainingQuota }) => {
 	const [oddsKey, setOddsKey] = (0, import_react.useState)(settings.theOddsApiKey);
 	const [sportsKey, setSportsKey] = (0, import_react.useState)(settings.apiSportsKey);
+	const [geminiKey, setGeminiKey] = (0, import_react.useState)(settings.geminiApiKey ?? "");
 	const [bankroll, setBankroll] = (0, import_react.useState)(settings.initialBankroll);
 	const [demoMode, setDemoMode] = (0, import_react.useState)(settings.demoMode);
 	const [savedNotice, setSavedNotice] = (0, import_react.useState)(false);
 	(0, import_react.useEffect)(() => {
 		setOddsKey(settings.theOddsApiKey);
 		setSportsKey(settings.apiSportsKey);
+		setGeminiKey(settings.geminiApiKey ?? "");
 		setBankroll(settings.initialBankroll);
 		setDemoMode(settings.demoMode);
 	}, [settings]);
@@ -16259,11 +16358,13 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 		e.preventDefault();
 		const trimmedOdds = oddsKey.trim();
 		const trimmedSports = sportsKey.trim();
+		const trimmedGemini = geminiKey.trim();
 		const safeBankroll = Math.max(5, Math.round(bankroll || 5));
 		setBankroll(safeBankroll);
 		onUpdateSettings({
 			theOddsApiKey: trimmedOdds,
 			apiSportsKey: trimmedSports,
+			geminiApiKey: trimmedGemini,
 			demoMode,
 			initialBankroll: safeBankroll
 		});
@@ -16274,12 +16375,14 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 	const handleTestAndLoad = async () => {
 		const trimmedOdds = oddsKey.trim();
 		const trimmedSports = sportsKey.trim();
+		const trimmedGemini = geminiKey.trim();
 		const safeBankroll = Math.max(5, Math.round(bankroll || 5));
 		setBankroll(safeBankroll);
 		setDemoMode(false);
 		onUpdateSettings({
 			theOddsApiKey: trimmedOdds,
 			apiSportsKey: trimmedSports,
+			geminiApiKey: trimmedGemini,
 			demoMode: false,
 			initialBankroll: safeBankroll
 		});
@@ -16336,6 +16439,7 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 								onUpdateSettings({
 									theOddsApiKey: oddsKey.trim(),
 									apiSportsKey: sportsKey.trim(),
+									geminiApiKey: geminiKey.trim(),
 									demoMode: next,
 									initialBankroll: Math.max(5, Math.round(bankroll || 5))
 								});
@@ -16387,6 +16491,32 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 							value: sportsKey,
 							onChange: (e) => setSportsKey(e.target.value),
 							placeholder: "Volitelný x-apisports-key...",
+							className: "mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
+						})
+					] }),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex flex-wrap items-center justify-between gap-2",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+								htmlFor: "gemini-api-key",
+								className: "block text-sm font-semibold text-slate-100",
+								children: "Gemini API klíč (volitelné AI zdůvodnění tiketů)"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: `inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold ${geminiKey.trim() ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-slate-700 bg-[#090D16] text-slate-400"}`,
+								children: geminiKey.trim() ? "Aktivní (Gemini 2.5 Flash)" : "Volitelné (vypnuto)"
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							className: "mt-0.5 text-xs text-slate-400",
+							children: "Pokud zadáte vlastní klíč z Google AI Studio, aplikace vyhledá aktuální formu, zranění a zdůvodnění Value přímo v prohlížeči (Google Search grounding). Bez klíče se zobrazí čistý statistický přehled."
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+							id: "gemini-api-key",
+							type: "password",
+							autoComplete: "off",
+							value: geminiKey,
+							onChange: (e) => setGeminiKey(e.target.value),
+							placeholder: "Volitelný Gemini API klíč (AIza...)...",
 							className: "mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
 						})
 					] }),
@@ -17192,6 +17322,7 @@ var CustomMatchModal = ({ isOpen, onClose, onAddMatch }) => {
 var DEFAULT_SETTINGS = {
 	theOddsApiKey: "",
 	apiSportsKey: "",
+	geminiApiKey: "",
 	demoMode: false,
 	initialBankroll: 1e4
 };
@@ -17374,6 +17505,7 @@ function App() {
 					activeTab === "generator" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TicketGenerator, {
 						matches: activeMatches,
 						currentBankroll,
+						geminiApiKey: settings.geminiApiKey ?? "",
 						onSaveTicket: handleSaveTicket,
 						onOpenBetano: handleOpenBetano,
 						onOpenCustomMatchModal: () => setIsCustomModalOpen(true),

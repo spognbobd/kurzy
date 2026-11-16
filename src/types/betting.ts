@@ -86,6 +86,7 @@ export interface Ticket {
 export interface AppSettings {
   theOddsApiKey: string;
   apiSportsKey: string;
+  geminiApiKey?: string;
   demoMode: boolean;
   initialBankroll: number;
 }
