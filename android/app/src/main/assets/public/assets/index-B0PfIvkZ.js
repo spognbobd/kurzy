@@ -15253,6 +15253,12 @@ var LEG_COUNT_OPTIONS = [
 		label: "4"
 	}
 ];
+var DAY_FILTER_OPTIONS = [
+	"Vše",
+	"Dnes",
+	"Zítra",
+	"Víkend"
+];
 var TICKET_MODES = [
 	{
 		id: "safe",
@@ -15317,6 +15323,9 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const matchesSignature = (0, import_react.useMemo)(() => matches.map((m) => `${m.id}:${m.aiProbability}:${m.valueScore}`).join("|"), [matches]);
 	const [budgetInput, setBudgetInput] = (0, import_react.useState)(() => String(Math.max(5, Math.round(currentBankroll))));
 	const [ticketStyle, setTicketStyle] = (0, import_react.useState)("safe");
+	const [timeWindow, setTimeWindow] = (0, import_react.useState)(() => {
+		return matches.some((m) => m.timeWindow === "Dnes" && m.valueScore >= 0 && !isSuspiciousValueMatch(m)) ? "Dnes" : "Vše";
+	});
 	const [exactLegsCount, setExactLegsCount] = (0, import_react.useState)(null);
 	const [minMatchProbability, setMinMatchProbability] = (0, import_react.useState)(() => recommendedMinProb);
 	const [selectedSports, setSelectedSports] = (0, import_react.useState)(ALL_SPORTS);
@@ -15329,21 +15338,56 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const [statFallbackReasons, setStatFallbackReasons] = (0, import_react.useState)({});
 	const [expandedMatchIds, setExpandedMatchIds] = (0, import_react.useState)({});
 	const [loadingMatchIds, setLoadingMatchIds] = (0, import_react.useState)({});
+	const hadMatchesRef = import_react.useRef(matches.length > 0);
 	(0, import_react.useEffect)(() => {
 		setMinMatchProbability(recommendedMinProb);
 		setVariationIndex(0);
 		setSavedFeedback(false);
 	}, [matchesSignature, recommendedMinProb]);
+	const dayCounts = (0, import_react.useMemo)(() => {
+		const counts = {
+			Vše: 0,
+			Dnes: 0,
+			Zítra: 0,
+			Víkend: 0
+		};
+		for (const m of matches) {
+			if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
+			counts.Vše += 1;
+			counts[m.timeWindow] += 1;
+		}
+		return counts;
+	}, [matches]);
+	(0, import_react.useEffect)(() => {
+		if (!hadMatchesRef.current && matches.length > 0) {
+			hadMatchesRef.current = true;
+			setTimeWindow(dayCounts.Dnes > 0 ? "Dnes" : "Vše");
+			return;
+		}
+		if (matches.length === 0) {
+			hadMatchesRef.current = false;
+			return;
+		}
+		if (timeWindow !== "Vše" && dayCounts[timeWindow] === 0) setTimeWindow(dayCounts.Dnes > 0 ? "Dnes" : "Vše");
+	}, [
+		matches.length,
+		dayCounts,
+		timeWindow
+	]);
 	const trimmedGeminiKey = geminiApiKey.trim();
 	(0, import_react.useEffect)(() => {
 		setStatFallbackReasons({});
 	}, [trimmedGeminiKey]);
+	const dayFilteredMatches = (0, import_react.useMemo)(() => {
+		if (timeWindow === "Vše") return matches;
+		return matches.filter((m) => m.timeWindow === timeWindow);
+	}, [matches, timeWindow]);
 	const safeBudget = parseAmountInput(budgetInput, currentBankroll, 5);
-	const generated = (0, import_react.useMemo)(() => generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
+	const generated = (0, import_react.useMemo)(() => generateOptimalTicket(dayFilteredMatches, selectedSports, ticketStyle, safeBudget, variationIndex, {
 		minMatchProbability,
 		exactLegsCount
 	}), [
-		matches,
+		dayFilteredMatches,
 		selectedSports,
 		ticketStyle,
 		safeBudget,
@@ -15360,7 +15404,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			totalNonNeg: 0,
 			eligible: 0
 		});
-		for (const m of matches) {
+		for (const m of dayFilteredMatches) {
 			if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
 			const entry = counts.get(m.sport);
 			if (!entry) continue;
@@ -15371,7 +15415,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			availableSports: ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0),
 			sportCounts: counts
 		};
-	}, [matches, minMatchProbability]);
+	}, [dayFilteredMatches, minMatchProbability]);
 	const handleOpenOrFetchAnalysis = async (leg) => {
 		if (loadingMatchIds[leg.matchId]) return;
 		if (aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text) {
@@ -15425,12 +15469,12 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 			[matchId]: false
 		}));
 	};
-	const eligibleMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [
-		matches,
+	const eligibleMatchesCount = (0, import_react.useMemo)(() => dayFilteredMatches.filter((m) => selectedSports.includes(m.sport) && m.aiProbability >= minMatchProbability && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [
+		dayFilteredMatches,
 		selectedSports,
 		minMatchProbability
 	]);
-	const nonNegativeSportMatchesCount = (0, import_react.useMemo)(() => matches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [matches, selectedSports]);
+	const nonNegativeSportMatchesCount = (0, import_react.useMemo)(() => dayFilteredMatches.filter((m) => selectedSports.includes(m.sport) && m.valueScore >= 0 && !isSuspiciousValueMatch(m)).length, [dayFilteredMatches, selectedSports]);
 	const toggleSport = (sport) => {
 		setSelectedSports((prev) => {
 			if (prev.includes(sport)) {
@@ -15444,6 +15488,11 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	};
 	const handleSelectStyle = (nextStyle) => {
 		setTicketStyle(nextStyle);
+		setVariationIndex(0);
+		setSavedFeedback(false);
+	};
+	const handleSelectTimeWindow = (nextWindow) => {
+		setTimeWindow(nextWindow);
 		setVariationIndex(0);
 		setSavedFeedback(false);
 	};
@@ -15531,6 +15580,8 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 								"Filtry: ",
 								activeMode.shortTitle,
 								" · ",
+								timeWindow,
+								" · ",
 								legsSummaryLabel,
 								" · Min. ",
 								minMatchProbability,
@@ -15570,6 +15621,39 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 								children: activeMode.summary
 							})
 						] }),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "border-t border-slate-800/80 pt-3.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center justify-between gap-2",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "text-xs font-semibold text-slate-300",
+									children: "Den / období zápasu"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+									className: "font-mono text-[11px] tabular-nums text-slate-400",
+									children: [dayCounts[timeWindow], " dostupných"]
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								role: "group",
+								"aria-label": "Filtr dne zápasu",
+								className: "mt-1.5 grid grid-cols-4 gap-1.5",
+								children: DAY_FILTER_OPTIONS.map((opt) => {
+									const active = timeWindow === opt;
+									const count = dayCounts[opt];
+									const isDisabled = opt !== "Vše" && count === 0 && !active;
+									return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isDisabled,
+										onClick: () => handleSelectTimeWindow(opt),
+										"aria-pressed": active,
+										className: `inline-flex min-h-[40px] items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${active ? "border-emerald-500/70 bg-emerald-500/15 text-emerald-300" : isDisabled ? "cursor-not-allowed border-slate-800/60 bg-[#090D16]/60 text-slate-600" : "border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100"}`,
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: opt }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: `font-mono text-[10px] tabular-nums ${active ? "text-emerald-300/90" : isDisabled ? "text-slate-600" : "text-slate-500"}`,
+											children: count
+										})]
+									}, opt);
+								})
+							})]
+						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "border-t border-slate-800/80 pt-3.5",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -15784,27 +15868,40 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 							className: "mt-5 flex flex-wrap items-center justify-center gap-3",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-								type: "button",
-								onClick: () => {
-									setMinMatchProbability(recommendedMinProb);
-									setVariationIndex(0);
-								},
-								className: "inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
-								children: [
-									"Doporučený limit (",
-									recommendedMinProb,
-									" %)"
-								]
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-								type: "button",
-								onClick: () => {
-									setSelectedSports(ALL_SPORTS);
-									setVariationIndex(0);
-								},
-								className: "inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
-								children: "Vybrat všechny sporty"
-							})]
+							children: [
+								timeWindow !== "Vše" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => handleSelectTimeWindow("Vše"),
+									className: "inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
+									children: [
+										"Zobrazit všechny dny (",
+										dayCounts.Vše,
+										")"
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => {
+										setMinMatchProbability(recommendedMinProb);
+										setVariationIndex(0);
+									},
+									className: "inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400",
+									children: [
+										"Doporučený limit (",
+										recommendedMinProb,
+										" %)"
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									onClick: () => {
+										setSelectedSports(ALL_SPORTS);
+										setVariationIndex(0);
+									},
+									className: "inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800",
+									children: "Vybrat všechny sporty"
+								})
+							]
 						})
 					]
 				}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {

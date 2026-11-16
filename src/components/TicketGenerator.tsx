@@ -24,6 +24,7 @@ import {
   SportCategory,
   Ticket,
   TicketStyle,
+  TimeWindow,
 } from '../types/betting';
 import {
   BETANO_HOME_URL,
@@ -69,6 +70,10 @@ const LEG_COUNT_OPTIONS: Array<{ value: number | null; label: string }> = [
   { value: 3, label: '3' },
   { value: 4, label: '4' },
 ];
+
+type DayFilter = TimeWindow | 'Vše';
+
+const DAY_FILTER_OPTIONS: DayFilter[] = ['Vše', 'Dnes', 'Zítra', 'Víkend'];
 
 const TICKET_MODES: {
   id: TicketStyle;
@@ -180,6 +185,12 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     String(Math.max(5, Math.round(currentBankroll)))
   );
   const [ticketStyle, setTicketStyle] = useState<TicketStyle>('safe');
+  const [timeWindow, setTimeWindow] = useState<DayFilter>(() => {
+    const hasTodayValid = matches.some(
+      (m) => m.timeWindow === 'Dnes' && m.valueScore >= 0 && !isSuspiciousValueMatch(m)
+    );
+    return hasTodayValid ? 'Dnes' : 'Vše';
+  });
   const [exactLegsCount, setExactLegsCount] = useState<number | null>(null);
   const [minMatchProbability, setMinMatchProbability] = useState<number>(() => recommendedMinProb);
   const [selectedSports, setSelectedSports] = useState<SportCategory[]>(ALL_SPORTS);
@@ -194,6 +205,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   >({});
   const [expandedMatchIds, setExpandedMatchIds] = useState<Record<string, boolean>>({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
+  const hadMatchesRef = React.useRef(matches.length > 0);
 
   useEffect(() => {
     setMinMatchProbability(recommendedMinProb);
@@ -201,22 +213,57 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(false);
   }, [matchesSignature, recommendedMinProb]);
 
+  const dayCounts = useMemo(() => {
+    const counts: Record<DayFilter, number> = {
+      Vše: 0,
+      Dnes: 0,
+      Zítra: 0,
+      Víkend: 0,
+    };
+    for (const m of matches) {
+      if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
+      counts.Vše += 1;
+      counts[m.timeWindow] += 1;
+    }
+    return counts;
+  }, [matches]);
+
+  useEffect(() => {
+    if (!hadMatchesRef.current && matches.length > 0) {
+      hadMatchesRef.current = true;
+      setTimeWindow(dayCounts.Dnes > 0 ? 'Dnes' : 'Vše');
+      return;
+    }
+    if (matches.length === 0) {
+      hadMatchesRef.current = false;
+      return;
+    }
+    if (timeWindow !== 'Vše' && dayCounts[timeWindow] === 0) {
+      setTimeWindow(dayCounts.Dnes > 0 ? 'Dnes' : 'Vše');
+    }
+  }, [matches.length, dayCounts, timeWindow]);
+
   const trimmedGeminiKey = geminiApiKey.trim();
 
   useEffect(() => {
     setStatFallbackReasons({});
   }, [trimmedGeminiKey]);
 
+  const dayFilteredMatches = useMemo(() => {
+    if (timeWindow === 'Vše') return matches;
+    return matches.filter((m) => m.timeWindow === timeWindow);
+  }, [matches, timeWindow]);
+
   const safeBudget = parseAmountInput(budgetInput, currentBankroll, 5);
 
   const generated = useMemo(
     () =>
-      generateOptimalTicket(matches, selectedSports, ticketStyle, safeBudget, variationIndex, {
+      generateOptimalTicket(dayFilteredMatches, selectedSports, ticketStyle, safeBudget, variationIndex, {
         minMatchProbability,
         exactLegsCount,
       }),
     [
-      matches,
+      dayFilteredMatches,
       selectedSports,
       ticketStyle,
       safeBudget,
@@ -237,7 +284,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     for (const s of ALL_SPORTS) {
       counts.set(s, { totalNonNeg: 0, eligible: 0 });
     }
-    for (const m of matches) {
+    for (const m of dayFilteredMatches) {
       if (m.valueScore < 0 || isSuspiciousValueMatch(m)) continue;
       const entry = counts.get(m.sport);
       if (!entry) continue;
@@ -249,7 +296,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
     const withMatches = ALL_SPORTS.filter((s) => (counts.get(s)?.totalNonNeg ?? 0) > 0);
     return { availableSports: withMatches, sportCounts: counts };
-  }, [matches, minMatchProbability]);
+  }, [dayFilteredMatches, minMatchProbability]);
 
   const handleOpenOrFetchAnalysis = async (leg: Ticket['legs'][number]) => {
     if (loadingMatchIds[leg.matchId]) return;
@@ -295,25 +342,25 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
   const eligibleMatchesCount = useMemo(
     () =>
-      matches.filter(
+      dayFilteredMatches.filter(
         (m) =>
           selectedSports.includes(m.sport) &&
           m.aiProbability >= minMatchProbability &&
           m.valueScore >= 0 &&
           !isSuspiciousValueMatch(m)
       ).length,
-    [matches, selectedSports, minMatchProbability]
+    [dayFilteredMatches, selectedSports, minMatchProbability]
   );
 
   const nonNegativeSportMatchesCount = useMemo(
     () =>
-      matches.filter(
+      dayFilteredMatches.filter(
         (m) =>
           selectedSports.includes(m.sport) &&
           m.valueScore >= 0 &&
           !isSuspiciousValueMatch(m)
       ).length,
-    [matches, selectedSports]
+    [dayFilteredMatches, selectedSports]
   );
 
   const toggleSport = (sport: SportCategory) => {
@@ -331,6 +378,12 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
   const handleSelectStyle = (nextStyle: TicketStyle) => {
     setTicketStyle(nextStyle);
+    setVariationIndex(0);
+    setSavedFeedback(false);
+  };
+
+  const handleSelectTimeWindow = (nextWindow: DayFilter) => {
+    setTimeWindow(nextWindow);
     setVariationIndex(0);
     setSavedFeedback(false);
   };
@@ -453,7 +506,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             <div className="flex min-w-0 items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 shrink-0 text-emerald-400" />
               <span className="truncate font-mono text-xs font-semibold tabular-nums text-slate-200">
-                Filtry: {activeMode.shortTitle} · {legsSummaryLabel} · Min. {minMatchProbability} %
+                Filtry: {activeMode.shortTitle} · {timeWindow} · {legsSummaryLabel} · Min. {minMatchProbability} %
               </span>
             </div>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-800 bg-[#090D16] px-2.5 py-1 text-[11px] font-medium text-slate-300">
@@ -498,6 +551,52 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               })}
             </div>
             <p className="mt-1.5 text-[11px] leading-snug text-slate-400">{activeMode.summary}</p>
+          </div>
+
+          {/* 1B. Compact Day / Time Window Selector */}
+          <div className="border-t border-slate-800/80 pt-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-300">Den / období zápasu</span>
+              <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                {dayCounts[timeWindow]} dostupných
+              </span>
+            </div>
+            <div
+              role="group"
+              aria-label="Filtr dne zápasu"
+              className="mt-1.5 grid grid-cols-4 gap-1.5"
+            >
+              {DAY_FILTER_OPTIONS.map((opt) => {
+                const active = timeWindow === opt;
+                const count = dayCounts[opt];
+                const isDisabled = opt !== 'Vše' && count === 0 && !active;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    disabled={isDisabled}
+                    onClick={() => handleSelectTimeWindow(opt)}
+                    aria-pressed={active}
+                    className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      active
+                        ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
+                        : isDisabled
+                        ? 'cursor-not-allowed border-slate-800/60 bg-[#090D16]/60 text-slate-600'
+                        : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                    }`}
+                  >
+                    <span>{opt}</span>
+                    <span
+                      className={`font-mono text-[10px] tabular-nums ${
+                        active ? 'text-emerald-300/90' : isDisabled ? 'text-slate-600' : 'text-slate-500'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* 2. Exact Leg Count Selector */}
@@ -721,6 +820,15 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   : 'Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu.'}
               </p>
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                {timeWindow !== 'Vše' && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTimeWindow('Vše')}
+                    className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
+                  >
+                    Zobrazit všechny dny ({dayCounts.Vše})
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
