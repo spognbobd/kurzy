@@ -14893,7 +14893,13 @@ var MatchFeed = ({ matches, selectedMatchIds, onToggleMatchOnSlip, onOpenBetano,
 };
 // src/services/geminiReasoningService.ts
 var LOCAL_STORAGE_REASONS_KEY = "betedge_gemini_match_reasons_v1";
-var GEMINI_TIMEOUT_MS = 6e3;
+var GEMINI_PER_MODEL_TIMEOUT_MS = 4e3;
+var GEMINI_MODEL_PRIORITY = [
+	"gemini-3.8-flash",
+	"gemini-3.8-flash-lite",
+	"gemini-3.8-pro",
+	"gemini-3-flash-preview"
+];
 function loadCachedMatchReasons() {
 	if (typeof window === "undefined") return {};
 	try {
@@ -15003,48 +15009,47 @@ async function fetchSingleMatchReasoning(leg, geminiApiKey) {
 		``,
 		`Data zápasu: ${JSON.stringify(matchContext)}`
 	].join("\n");
-	const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-	try {
-		const response = await fetch(endpoint, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			signal: controller.signal,
-			body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-		});
-		if (!response.ok) {
-			const apiStatus = await extractGeminiErrorStatus(response);
+	const requestBody = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+	let lastErrorStatus = "Neznámá chyba API";
+	for (const model of GEMINI_MODEL_PRIORITY) {
+		const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), GEMINI_PER_MODEL_TIMEOUT_MS);
+		try {
+			const response = await fetch(endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				signal: controller.signal,
+				body: requestBody
+			});
+			if (!response.ok) {
+				lastErrorStatus = `${model}: ${await extractGeminiErrorStatus(response)}`;
+				continue;
+			}
+			const payload = await response.json();
+			const rawText = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
+			if (!rawText) {
+				const reason = payload.promptFeedback?.blockReason ?? payload.candidates?.[0]?.finishReason ?? "prázdná odpověď bez textu";
+				lastErrorStatus = `${model}: HTTP ${response.status} — Model nevrátil text (${reason})`;
+				continue;
+			}
 			return {
-				text: buildStatisticalMatchReasoning(leg),
-				source: "stats",
-				apiStatus
+				text: rawText,
+				source: "gemini",
+				modelUsed: model
 			};
+		} catch (err) {
+			lastErrorStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? `${model}: Timeout 4s` : `${model}: Síťová chyba (${err instanceof Error ? err.message : "Failed to fetch"})`;
+			continue;
+		} finally {
+			clearTimeout(timeoutId);
 		}
-		const payload = await response.json();
-		const rawText = payload.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("\n").replace(/\*\*/g, "").trim() ?? "";
-		if (!rawText) {
-			const reason = payload.promptFeedback?.blockReason ?? payload.candidates?.[0]?.finishReason ?? "prázdná odpověď bez textu";
-			return {
-				text: buildStatisticalMatchReasoning(leg),
-				source: "stats",
-				apiStatus: `HTTP ${response.status}: Model nevrátil text (${reason})`
-			};
-		}
-		return {
-			text: rawText,
-			source: "gemini"
-		};
-	} catch (err) {
-		const apiStatus = controller.signal.aborted || err instanceof DOMException && err.name === "AbortError" ? "Timeout 6s" : `Síťová chyba: ${err instanceof Error ? err.message : "Failed to fetch"}`;
-		return {
-			text: buildStatisticalMatchReasoning(leg),
-			source: "stats",
-			apiStatus
-		};
-	} finally {
-		clearTimeout(timeoutId);
 	}
+	return {
+		text: buildStatisticalMatchReasoning(leg),
+		source: "stats",
+		apiStatus: lastErrorStatus
+	};
 }
 // src/components/TicketGenerator.tsx
 var ALL_SPORTS = [
@@ -15149,6 +15154,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 	const [customStake, setCustomStake] = (0, import_react.useState)(5);
 	const [savedFeedback, setSavedFeedback] = (0, import_react.useState)(false);
 	const [aiReasons, setAiReasons] = (0, import_react.useState)(() => loadCachedMatchReasons());
+	const [aiModels, setAiModels] = (0, import_react.useState)({});
 	const [statFallbackReasons, setStatFallbackReasons] = (0, import_react.useState)({});
 	const [loadingMatchIds, setLoadingMatchIds] = (0, import_react.useState)({});
 	(0, import_react.useEffect)(() => {
@@ -15180,15 +15186,20 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 		}));
 		try {
 			const result = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
-			if (result.source === "gemini") setAiReasons((prev) => {
-				const next = {
+			if (result.source === "gemini") {
+				setAiReasons((prev) => {
+					const next = {
+						...prev,
+						[leg.matchId]: result.text
+					};
+					saveCachedMatchReasons(next);
+					return next;
+				});
+				if (result.modelUsed) setAiModels((prev) => ({
 					...prev,
-					[leg.matchId]: result.text
-				};
-				saveCachedMatchReasons(next);
-				return next;
-			});
-			else setStatFallbackReasons((prev) => ({
+					[leg.matchId]: result.modelUsed
+				}));
+			} else setStatFallbackReasons((prev) => ({
 				...prev,
 				[leg.matchId]: {
 					text: result.text,
@@ -15778,7 +15789,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 												className: "flex items-center justify-between gap-2 text-[11px]",
 												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini 3.8 Flash · AI analýza" : "Statistický rozbor zápasu" })]
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? `${aiModels[leg.matchId] ?? "Gemini AI"} · AI analýza` : "Statistický rozbor zápasu" })]
 												})
 											}), renderFormattedGeminiReasoning(activeReason)]
 										}), !geminiReason && statFallback?.apiStatus && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {

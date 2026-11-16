@@ -1,7 +1,13 @@
 import { TicketLeg } from '../types/betting';
 
 const LOCAL_STORAGE_REASONS_KEY = 'betedge_gemini_match_reasons_v1';
-const GEMINI_TIMEOUT_MS = 6000;
+const GEMINI_PER_MODEL_TIMEOUT_MS = 4000;
+const GEMINI_MODEL_PRIORITY = [
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
+  'gemini-3.8-pro',
+  'gemini-3-flash-preview',
+] as const;
 
 export function loadCachedMatchReasons(): Record<string, string> {
   if (typeof window === 'undefined') return {};
@@ -115,6 +121,7 @@ interface GeminiRestResponse {
 export interface SingleMatchAnalysisResult {
   text: string;
   source: 'gemini' | 'stats';
+  modelUsed?: string;
   apiStatus?: string;
 }
 
@@ -188,68 +195,68 @@ export async function fetchSingleMatchReasoning(
     `Data zápasu: ${JSON.stringify(matchContext)}`,
   ].join('\n');
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+  const requestBody = JSON.stringify({
+    contents: [
+      {
+        parts: [{ text: prompt }],
+      },
+    ],
+  });
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  let lastErrorStatus = 'Neznámá chyba API';
 
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: prompt }],
-          },
-        ],
-      }),
-    });
+  for (const model of GEMINI_MODEL_PRIORITY) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_PER_MODEL_TIMEOUT_MS);
 
-    if (!response.ok) {
-      const apiStatus = await extractGeminiErrorStatus(response);
-      return {
-        text: buildStatisticalMatchReasoning(leg),
-        source: 'stats',
-        apiStatus,
-      };
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const errDetail = await extractGeminiErrorStatus(response);
+        lastErrorStatus = `${model}: ${errDetail}`;
+        continue;
+      }
+
+      const payload = (await response.json()) as GeminiRestResponse;
+      const rawText =
+        payload.candidates?.[0]?.content?.parts
+          ?.map((p) => p.text ?? '')
+          .join('\n')
+          .replace(/\*\*/g, '')
+          .trim() ?? '';
+
+      if (!rawText) {
+        const reason =
+          payload.promptFeedback?.blockReason ??
+          payload.candidates?.[0]?.finishReason ??
+          'prázdná odpověď bez textu';
+        lastErrorStatus = `${model}: HTTP ${response.status} — Model nevrátil text (${reason})`;
+        continue;
+      }
+
+      return { text: rawText, source: 'gemini', modelUsed: model };
+    } catch (err) {
+      const isTimeout =
+        controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError');
+      lastErrorStatus = isTimeout
+        ? `${model}: Timeout 4s`
+        : `${model}: Síťová chyba (${err instanceof Error ? err.message : 'Failed to fetch'})`;
+      continue;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const payload = (await response.json()) as GeminiRestResponse;
-    const rawText =
-      payload.candidates?.[0]?.content?.parts
-        ?.map((p) => p.text ?? '')
-        .join('\n')
-        .replace(/\*\*/g, '')
-        .trim() ?? '';
-
-    if (!rawText) {
-      const reason =
-        payload.promptFeedback?.blockReason ??
-        payload.candidates?.[0]?.finishReason ??
-        'prázdná odpověď bez textu';
-      return {
-        text: buildStatisticalMatchReasoning(leg),
-        source: 'stats',
-        apiStatus: `HTTP ${response.status}: Model nevrátil text (${reason})`,
-      };
-    }
-
-    return { text: rawText, source: 'gemini' };
-  } catch (err) {
-    const isTimeout =
-      controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError');
-    const apiStatus = isTimeout
-      ? 'Timeout 6s'
-      : `Síťová chyba: ${err instanceof Error ? err.message : 'Failed to fetch'}`;
-
-    return {
-      text: buildStatisticalMatchReasoning(leg),
-      source: 'stats',
-      apiStatus,
-    };
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  return {
+    text: buildStatisticalMatchReasoning(leg),
+    source: 'stats',
+    apiStatus: lastErrorStatus,
+  };
 }

@@ -188,6 +188,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [customStake, setCustomStake] = useState<number>(5);
   const [savedFeedback, setSavedFeedback] = useState(false);
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
+  const [aiModels, setAiModels] = useState<Record<string, string>>({});
   const [statFallbackReasons, setStatFallbackReasons] = useState<
     Record<string, { text: string; apiStatus?: string }>
   >({});
@@ -234,6 +235,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           saveCachedMatchReasons(next);
           return next;
         });
+        if (result.modelUsed) {
+          setAiModels((prev) => ({ ...prev, [leg.matchId]: result.modelUsed! }));
+        }
       } else {
         setStatFallbackReasons((prev) => ({
           ...prev,
@@ -828,7 +832,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                                 <Sparkles className="h-3 w-3 shrink-0" />
                                 <span>
                                   {geminiReason
-                                    ? 'Gemini 3.8 Flash · AI analýza'
+                                    ? `${aiModels[leg.matchId] ?? 'Gemini AI'} · AI analýza`
                                     : 'Statistický rozbor zápasu'}
                                 </span>
                               </span>
