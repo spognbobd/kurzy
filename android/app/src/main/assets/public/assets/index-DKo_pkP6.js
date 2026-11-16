@@ -14993,7 +14993,7 @@ async function fetchTicketLegsReasoning(legs, geminiApiKey, signal) {
 		`Vrať VÝHRADNĚ čistý JSON objekt bez markdown bloků ve tvaru: {"reasons":[{"matchId":"...","reasoning":"Aktuální forma ...:\\n\\nSíla soupeře ...:\\n\\nVerdikt k tiketu: ..."}]}`,
 		`Zápasy: ${JSON.stringify(legDescriptors)}`
 	].join("\n");
-	const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(trimmedKey)}`;
+	const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(trimmedKey)}`;
 	const response = await fetch(endpoint, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -15776,7 +15776,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 												className: "flex items-center justify-between gap-2 text-[11px]",
 												children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 													className: "inline-flex items-center gap-1.5 font-semibold text-emerald-400",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini 2.5 Flash · Google Search analýza" : "Gemini AI vyhledává aktuální formu, zranění a Value..." })]
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "h-3 w-3 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: geminiReason ? "Gemini 3.8 Flash · Google Search analýza" : "Gemini AI vyhledává aktuální formu, zranění a Value..." })]
 												})
 											}), isLoadingReason && !geminiReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 												className: "mt-2 space-y-1.5",
@@ -16503,7 +16503,7 @@ var SettingsView = ({ settings, onUpdateSettings, onFetchLiveData, isLoadingLive
 								children: "Gemini API klíč (volitelné AI zdůvodnění tiketů)"
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 								className: `inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold ${geminiKey.trim() ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-slate-700 bg-[#090D16] text-slate-400"}`,
-								children: geminiKey.trim() ? "Aktivní (Gemini 2.5 Flash)" : "Volitelné (vypnuto)"
+								children: geminiKey.trim() ? "Aktivní (Gemini 3.8 Flash)" : "Volitelné (vypnuto)"
 							})]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {

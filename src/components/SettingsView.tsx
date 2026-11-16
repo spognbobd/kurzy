@@ -229,7 +229,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     : 'border-slate-700 bg-[#090D16] text-slate-400'
                 }`}
               >
-                {geminiKey.trim() ? 'Aktivní (Gemini 2.5 Flash)' : 'Volitelné (vypnuto)'}
+                {geminiKey.trim() ? 'Aktivní (Gemini 3.8 Flash)' : 'Volitelné (vypnuto)'}
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-400">

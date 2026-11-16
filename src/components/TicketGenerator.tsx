@@ -861,7 +861,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               <Sparkles className="h-3 w-3 shrink-0" />
                               <span>
                                 {geminiReason
-                                  ? 'Gemini 2.5 Flash · Google Search analýza'
+                                  ? 'Gemini 3.8 Flash · Google Search analýza'
                                   : 'Gemini AI vyhledává aktuální formu, zranění a Value...'}
                               </span>
                             </span>
