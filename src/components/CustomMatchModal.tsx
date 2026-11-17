@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Calculator, PlusCircle, ShieldCheck, X } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
+import { translateSport } from '../i18n/translations';
 import { MatchAnalysis, SportCategory } from '../types/betting';
 import {
   calculateCustomMatchMetrics,
@@ -13,15 +15,15 @@ interface CustomMatchModalProps {
   onAddMatch: (match: MatchAnalysis) => void;
 }
 
-const SPORT_OPTIONS: { value: SportCategory; label: string; defaultLeague: string }[] = [
-  { value: 'Ping-pong', label: 'Stolní tenis / Ping-pong', defaultLeague: 'Stolní tenis (Vlastní)' },
-  { value: 'Tenis', label: 'Tenis', defaultLeague: 'Tenis (Vlastní)' },
-  { value: 'Fotbal', label: 'Fotbal', defaultLeague: 'Fotbal (Vlastní)' },
-  { value: 'Hokej', label: 'Hokej', defaultLeague: 'Hokej (Vlastní)' },
-  { value: 'MMA', label: 'MMA', defaultLeague: 'MMA (Vlastní)' },
-  { value: 'Basketbal', label: 'Basketbal', defaultLeague: 'Basketbal (Vlastní)' },
-  { value: 'Šipky', label: 'Šipky', defaultLeague: 'Šipky (Vlastní)' },
-  { value: 'Ostatní', label: 'Ostatní', defaultLeague: 'Vlastní turnaj' },
+const SPORT_CATEGORIES: SportCategory[] = [
+  'Ping-pong',
+  'Tenis',
+  'Fotbal',
+  'Hokej',
+  'MMA',
+  'Basketbal',
+  'Šipky',
+  'Ostatní',
 ];
 
 function parseDecimal(raw: string): number | null {
@@ -36,6 +38,9 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
   onClose,
   onAddMatch,
 }) => {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+
   const [sport, setSport] = useState<SportCategory>('Ping-pong');
   const [leagueInput, setLeagueInput] = useState('');
   const [homeTeam, setHomeTeam] = useState('');
@@ -66,6 +71,16 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
   const isTwoWaySport =
     sport === 'Ping-pong' || sport === 'Tenis' || sport === 'Šipky' || sport === 'MMA';
 
+  const getDefaultLeague = (s: SportCategory): string => {
+    if (isEn) {
+      if (s === 'Ostatní') return 'Custom Tournament';
+      return `${translateSport(s, 'en')} (Custom)`;
+    }
+    if (s === 'Ping-pong') return 'Stolní tenis (Vlastní)';
+    if (s === 'Ostatní') return 'Vlastní turnaj';
+    return `${s} (Vlastní)`;
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -74,22 +89,38 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
     const cleanAway = awayTeam.trim();
 
     if (!cleanHome || !cleanAway) {
-      setError('Zadejte prosím oba účastníky (Hráč / Tým 1 i Hráč / Tým 2).');
+      setError(
+        isEn
+          ? 'Please enter both participants (Player / Team 1 and Player / Team 2).'
+          : 'Zadejte prosím oba účastníky (Hráč / Tým 1 i Hráč / Tým 2).'
+      );
       return;
     }
 
     if (!parsedHome || parsedHome <= 1.01 || !parsedAway || parsedAway <= 1.01) {
-      setError('Zadejte platné kurzy vyšší než 1.01 pro oba hráče / týmy.');
+      setError(
+        isEn
+          ? 'Please enter valid odds greater than 1.01 for both players / teams.'
+          : 'Zadejte platné kurzy vyšší než 1.01 pro oba hráče / týmy.'
+      );
       return;
     }
 
     if (oddsDrawRaw.trim() && (!parsedDraw || parsedDraw <= 1.01)) {
-      setError('Volitelný kurz na remízu musí být vyšší než 1.01 nebo zůstat prázdný.');
+      setError(
+        isEn
+          ? 'Optional draw odds must be greater than 1.01 or left blank.'
+          : 'Volitelný kurz na remízu musí být vyšší než 1.01 nebo zůstat prázdný.'
+      );
       return;
     }
 
     if (comparisonOddsRaw.trim() && (!parsedComparison || parsedComparison <= 1.01)) {
-      setError('Srovnávací kurz z jiné sázkovky musí být vyšší než 1.01 nebo zůstat prázdný.');
+      setError(
+        isEn
+          ? 'Comparison odds from another bookmaker must be greater than 1.01 or left blank.'
+          : 'Srovnávací kurz z jiné sázkovky musí být vyšší než 1.01 nebo zůstat prázdný.'
+      );
       return;
     }
 
@@ -101,13 +132,16 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
     });
 
     if (!metrics) {
-      setError('Nepodařilo se vypočítat pravděpodobnost ze zadaných kurzů.');
+      setError(
+        isEn
+          ? 'Could not calculate probabilities from the entered odds.'
+          : 'Nepodařilo se vypočítat pravděpodobnost ze zadaných kurzů.'
+      );
       return;
     }
 
     const favName = metrics.favoriteSide === 'home' ? cleanHome : cleanAway;
-    const sportMeta = SPORT_OPTIONS.find((o) => o.value === sport);
-    const league = leagueInput.trim() || sportMeta?.defaultLeague || sport;
+    const league = leagueInput.trim() || getDefaultLeague(sport);
     const hasComparison = Boolean(parsedComparison && parsedComparison > 1.01);
 
     const newMatch: MatchAnalysis = {
@@ -131,26 +165,57 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
       h2hHomeWins: metrics.favoriteSide === 'home' ? 3 : 2,
       h2hDraws: parsedDraw ? 1 : 0,
       h2hAwayWins: metrics.favoriteSide === 'away' ? 3 : 2,
-      h2hSummary: `Férové šance ${formatPercent(metrics.fairProbHome)} vs. ${formatPercent(
-        metrics.fairProbAway
+      h2hSummary: `${formatPercent(metrics.fairProbHome, false, language)} vs. ${formatPercent(
+        metrics.fairProbAway,
+        false,
+        language
       )}`,
       aiProbability: metrics.favoriteFairProb,
       impliedProbability: metrics.favoriteImpliedProb,
       valueScore: metrics.valueScore,
-      reasoning: `Vlastní zápas · marže sázkovky ${formatPercent(
-        metrics.bookmakerMarginPct
-      )}. Očištěná férová šance: ${cleanHome} ${formatPercent(
-        metrics.fairProbHome
-      )}${
-        metrics.fairProbDraw !== null ? ` · Remíza ${formatPercent(metrics.fairProbDraw)}` : ''
-      } · ${cleanAway} ${formatPercent(metrics.fairProbAway)}. ${
-        hasComparison
-          ? `Srovnávací kurz ${formatOdds(metrics.marketAvgOdds)} dává Value ${formatPercent(
-              metrics.valueScore,
-              true
-            )}.`
-          : 'Bez srovnávacího kurzu nastaveno neutrální Value 0 %.'
-      }`,
+      reasoning: isEn
+        ? `Custom match · bookmaker margin ${formatPercent(
+            metrics.bookmakerMarginPct,
+            false,
+            'en'
+          )}. Fair probabilities: ${cleanHome} ${formatPercent(
+            metrics.fairProbHome,
+            false,
+            'en'
+          )}${
+            metrics.fairProbDraw !== null
+              ? ` · Draw ${formatPercent(metrics.fairProbDraw, false, 'en')}`
+              : ''
+          } · ${cleanAway} ${formatPercent(metrics.fairProbAway, false, 'en')}. ${
+            hasComparison
+              ? `Comparison odds ${formatOdds(metrics.marketAvgOdds)} yield Value ${formatPercent(
+                  metrics.valueScore,
+                  true,
+                  'en'
+                )}.`
+              : 'Without comparison odds, Value is set to 0%.'
+          }`
+        : `Vlastní zápas · marže sázkovky ${formatPercent(
+            metrics.bookmakerMarginPct,
+            false,
+            'cs'
+          )}. Očištěná férová šance: ${cleanHome} ${formatPercent(
+            metrics.fairProbHome,
+            false,
+            'cs'
+          )}${
+            metrics.fairProbDraw !== null
+              ? ` · Remíza ${formatPercent(metrics.fairProbDraw, false, 'cs')}`
+              : ''
+          } · ${cleanAway} ${formatPercent(metrics.fairProbAway, false, 'cs')}. ${
+            hasComparison
+              ? `Srovnávací kurz ${formatOdds(metrics.marketAvgOdds)} dává Value ${formatPercent(
+                  metrics.valueScore,
+                  true,
+                  'cs'
+                )}.`
+              : 'Bez srovnávacího kurzu nastaveno neutrální Value 0 %.'
+          }`,
       isLiveApi: false,
       isCustom: true,
       bookmakerMarginPct: metrics.bookmakerMarginPct,
@@ -172,10 +237,19 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
     !liveMetrics
       ? null
       : liveMetrics.bookmakerMarginPct <= 5.5
-      ? { label: 'Nízká marže (výhodný trh)', cls: 'text-emerald-400' }
+      ? {
+          label: isEn ? 'Low margin (favorable market)' : 'Nízká marže (výhodný trh)',
+          cls: 'text-emerald-400',
+        }
       : liveMetrics.bookmakerMarginPct <= 8.5
-      ? { label: 'Běžná marže sázkovky', cls: 'text-amber-300' }
-      : { label: 'Vysoká marže (ošizený kurz)', cls: 'text-rose-400' };
+      ? {
+          label: isEn ? 'Standard bookmaker margin' : 'Běžná marže sázkovky',
+          cls: 'text-amber-300',
+        }
+      : {
+          label: isEn ? 'High margin (heavy juice)' : 'Vysoká marže (ošizený kurz)',
+          cls: 'text-rose-400',
+        };
 
   return (
     <div
@@ -194,10 +268,12 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
             <PlusCircle className="h-5 w-5 text-emerald-400" />
             <div>
               <h2 id="custom-match-modal-title" className="font-display text-lg font-bold text-slate-50">
-                Přidat vlastní zápas
+                {isEn ? 'Add Custom Match' : 'Přidat vlastní zápas'}
               </h2>
               <p className="text-xs text-slate-400">
-                Stolní tenis / ping-pong, šipky nebo lokální turnaje mimo API
+                {isEn
+                  ? 'Table tennis, darts, or local tournaments outside the API'
+                  : 'Stolní tenis / ping-pong, šipky nebo lokální turnaje mimo API'}
               </p>
             </div>
           </div>
@@ -205,7 +281,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Zavřít formulář"
+            aria-label={isEn ? 'Close form' : 'Zavřít formulář'}
             className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:text-slate-100"
           >
             <X className="h-4 w-4" />
@@ -218,7 +294,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="custom-sport" className="block text-xs font-semibold text-slate-300">
-                Sport
+                {isEn ? 'Sport' : 'Sport'}
               </label>
               <select
                 id="custom-sport"
@@ -232,9 +308,11 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                 }}
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 focus:border-emerald-500/60 focus:outline-none"
               >
-                {SPORT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
+                {SPORT_CATEGORIES.map((s) => (
+                  <option key={s} value={s}>
+                    {s === 'Ping-pong' && !isEn
+                      ? 'Stolní tenis / Ping-pong'
+                      : translateSport(s, language)}
                   </option>
                 ))}
               </select>
@@ -242,14 +320,14 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
 
             <div>
               <label htmlFor="custom-league" className="block text-xs font-semibold text-slate-300">
-                Turnaj / liga (volitelné)
+                {isEn ? 'Tournament / League (optional)' : 'Turnaj / liga (volitelné)'}
               </label>
               <input
                 id="custom-league"
                 type="text"
                 value={leagueInput}
                 onChange={(e) => setLeagueInput(e.target.value)}
-                placeholder="např. TT Star Series / PDC"
+                placeholder={isEn ? 'e.g. TT Star Series / PDC' : 'např. TT Star Series / PDC'}
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
             </div>
@@ -259,14 +337,14 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="custom-home" className="block text-xs font-semibold text-slate-300">
-                Hráč / Tým 1 (Domácí)
+                {isEn ? 'Player / Team 1 (Home)' : 'Hráč / Tým 1 (Domácí)'}
               </label>
               <input
                 id="custom-home"
                 type="text"
                 value={homeTeam}
                 onChange={(e) => setHomeTeam(e.target.value)}
-                placeholder="např. Lubomír Jančařík"
+                placeholder={isEn ? 'e.g. Lubomír Jančařík' : 'např. Lubomír Jančařík'}
                 required
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
@@ -274,14 +352,14 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
 
             <div>
               <label htmlFor="custom-away" className="block text-xs font-semibold text-slate-300">
-                Hráč / Tým 2 (Hosté)
+                {isEn ? 'Player / Team 2 (Away)' : 'Hráč / Tým 2 (Hosté)'}
               </label>
               <input
                 id="custom-away"
                 type="text"
                 value={awayTeam}
                 onChange={(e) => setAwayTeam(e.target.value)}
-                placeholder="např. Tomáš Tregler"
+                placeholder={isEn ? 'e.g. Tomáš Tregler' : 'např. Tomáš Tregler'}
                 required
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
@@ -292,7 +370,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label htmlFor="custom-odds-home" className="block text-xs font-semibold text-slate-300">
-                Kurz Hráč/Tým 1
+                {isEn ? 'Odds Player/Team 1' : 'Kurz Hráč/Tým 1'}
               </label>
               <input
                 id="custom-odds-home"
@@ -300,7 +378,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                 inputMode="decimal"
                 value={oddsHomeRaw}
                 onChange={(e) => setOddsHomeRaw(e.target.value)}
-                placeholder="např. 1.65"
+                placeholder={isEn ? 'e.g. 1.65' : 'např. 1.65'}
                 required
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
@@ -308,7 +386,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
 
             <div>
               <label htmlFor="custom-odds-draw" className="block text-xs font-semibold text-slate-300">
-                Kurz Remíza (volitelné)
+                {isEn ? 'Draw Odds (optional)' : 'Kurz Remíza (volitelné)'}
               </label>
               <input
                 id="custom-odds-draw"
@@ -316,14 +394,22 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                 inputMode="decimal"
                 value={oddsDrawRaw}
                 onChange={(e) => setOddsDrawRaw(e.target.value)}
-                placeholder={isTwoWaySport ? 'Nechte prázdné' : 'např. 3.40'}
+                placeholder={
+                  isTwoWaySport
+                    ? isEn
+                      ? 'Leave blank'
+                      : 'Nechte prázdné'
+                    : isEn
+                    ? 'e.g. 3.40'
+                    : 'např. 3.40'
+                }
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
             </div>
 
             <div>
               <label htmlFor="custom-odds-away" className="block text-xs font-semibold text-slate-300">
-                Kurz Hráč/Tým 2
+                {isEn ? 'Odds Player/Team 2' : 'Kurz Hráč/Tým 2'}
               </label>
               <input
                 id="custom-odds-away"
@@ -331,7 +417,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                 inputMode="decimal"
                 value={oddsAwayRaw}
                 onChange={(e) => setOddsAwayRaw(e.target.value)}
-                placeholder="např. 2.15"
+                placeholder={isEn ? 'e.g. 2.15' : 'např. 2.15'}
                 required
                 className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
               />
@@ -341,7 +427,9 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
           {/* Optional Comparison Odds */}
           <div>
             <label htmlFor="custom-comparison-odds" className="block text-xs font-semibold text-slate-300">
-              Srovnávací / průměrný kurz na favorita z jiné sázkovky (volitelné)
+              {isEn
+                ? 'Comparison / market average odds on favorite (optional)'
+                : 'Srovnávací / průměrný kurz na favorita z jiné sázkovky (volitelné)'}
             </label>
             <input
               id="custom-comparison-odds"
@@ -349,7 +437,11 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
               inputMode="decimal"
               value={comparisonOddsRaw}
               onChange={(e) => setComparisonOddsRaw(e.target.value)}
-              placeholder="např. 1.55 (pokud nevyplníte, Value bude 0 %)"
+              placeholder={
+                isEn
+                  ? 'e.g. 1.55 (if empty, Value will be 0%)'
+                  : 'např. 1.55 (pokud nevyplníte, Value bude 0 %)'
+              }
               className="mt-1.5 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-sm font-semibold tabular-nums text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
@@ -359,46 +451,53 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
             <div className="flex items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200">
                 <Calculator className="h-4 w-4 text-emerald-400" />
-                <span>Automatický výpočet bez marže</span>
+                <span>
+                  {isEn ? 'Automatic Fair Probability & Margin' : 'Automatický výpočet bez marže'}
+                </span>
               </span>
               {liveMetrics && marginQuality && (
                 <span className={`font-mono text-xs font-semibold tabular-nums ${marginQuality.cls}`}>
-                  Marže: {formatPercent(liveMetrics.bookmakerMarginPct)}
+                  {isEn ? 'Margin' : 'Marže'}:{' '}
+                  {formatPercent(liveMetrics.bookmakerMarginPct, false, language)}
                 </span>
               )}
             </div>
 
             {!liveMetrics ? (
               <p className="mt-2 text-xs text-slate-400">
-                Zadejte kurzy pro oba hráče / týmy a kalkulačka ihned očistí kurzy od marže sázkovky.
+                {isEn
+                  ? 'Enter odds for both players / teams and the calculator will automatically strip bookmaker margin.'
+                  : 'Zadejte kurzy pro oba hráče / týmy a kalkulačka ihned očistí kurzy od marže sázkovky.'}
               </p>
             ) : (
               <div className="mt-3 space-y-2.5">
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                   <div className="rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2">
                     <span className="block truncate text-[11px] text-slate-400">
-                      {homeTeam.trim() || 'Hráč / Tým 1'}
+                      {homeTeam.trim() || (isEn ? 'Player / Team 1' : 'Hráč / Tým 1')}
                     </span>
                     <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100">
-                      {formatPercent(liveMetrics.fairProbHome)}
+                      {formatPercent(liveMetrics.fairProbHome, false, language)}
                     </span>
                   </div>
 
                   {liveMetrics.fairProbDraw !== null && (
                     <div className="rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2">
-                      <span className="block text-[11px] text-slate-400">Remíza</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {isEn ? 'Draw' : 'Remíza'}
+                      </span>
                       <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100">
-                        {formatPercent(liveMetrics.fairProbDraw)}
+                        {formatPercent(liveMetrics.fairProbDraw, false, language)}
                       </span>
                     </div>
                   )}
 
                   <div className="rounded-lg border border-slate-800/80 bg-[#111827] px-3 py-2">
                     <span className="block truncate text-[11px] text-slate-400">
-                      {awayTeam.trim() || 'Hráč / Tým 2'}
+                      {awayTeam.trim() || (isEn ? 'Player / Team 2' : 'Hráč / Tým 2')}
                     </span>
                     <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100">
-                      {formatPercent(liveMetrics.fairProbAway)}
+                      {formatPercent(liveMetrics.fairProbAway, false, language)}
                     </span>
                   </div>
                 </div>
@@ -406,11 +505,11 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2 text-xs">
                   <span className={marginQuality?.cls}>{marginQuality?.label}</span>
                   <span className="font-mono tabular-nums text-slate-300">
-                    Favorit:{' '}
+                    {isEn ? 'Favorite:' : 'Favorit:'}{' '}
                     <strong className="text-emerald-300">
                       {liveMetrics.favoriteSide === 'home'
-                        ? homeTeam.trim() || 'Hráč 1'
-                        : awayTeam.trim() || 'Hráč 2'}
+                        ? homeTeam.trim() || (isEn ? 'Player 1' : 'Hráč 1')
+                        : awayTeam.trim() || (isEn ? 'Player 2' : 'Hráč 2')}
                     </strong>{' '}
                     · Value{' '}
                     <strong
@@ -422,7 +521,7 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
                           : 'text-slate-200'
                       }
                     >
-                      {formatPercent(liveMetrics.valueScore, true)}
+                      {formatPercent(liveMetrics.valueScore, true, language)}
                     </strong>
                   </span>
                 </div>
@@ -446,14 +545,14 @@ export const CustomMatchModal: React.FC<CustomMatchModalProps> = ({
               onClick={onClose}
               className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800"
             >
-              Zrušit
+              {isEn ? 'Cancel' : 'Zrušit'}
             </button>
             <button
               type="submit"
               className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400"
             >
               <ShieldCheck className="h-4 w-4 shrink-0" />
-              <span>Uložit a přidat do analýzy</span>
+              <span>{isEn ? 'Save & Add to Analysis' : 'Uložit a přidat do analýzy'}</span>
             </button>
           </div>
         </form>

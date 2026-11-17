@@ -10,6 +10,12 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
+import {
+  translateRecommendedPick,
+  translateRiskLevel,
+  translateTicketLabel,
+} from '../i18n/translations';
 import {
   MatchAnalysis,
   NotificationLeadMinutes,
@@ -68,6 +74,10 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
   onStartFromScratch,
   onOpenBetano,
 }) => {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+  const locale = isEn ? 'en-GB' : 'cs-CZ';
+
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -139,7 +149,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
     const pts: EquityPoint[] = [
       {
         index: 0,
-        label: 'Počáteční kapitál',
+        label: isEn ? 'Initial Capital' : 'Počáteční kapitál',
         dateStr: 'Start',
         balance: running,
         delta: 0,
@@ -151,8 +161,8 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
       running += t.profit;
       pts.push({
         index: i + 1,
-        label: t.label,
-        dateStr: new Date(t.createdAt).toLocaleDateString('cs-CZ', {
+        label: translateTicketLabel(t.label, language),
+        dateStr: new Date(t.createdAt).toLocaleDateString(locale, {
           day: '2-digit',
           month: '2-digit',
         }),
@@ -163,7 +173,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
     });
 
     return pts;
-  }, [tickets, initialBankroll]);
+  }, [tickets, initialBankroll, isEn, language, locale]);
 
   const filteredTickets = useMemo(() => {
     const sorted = [...tickets].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -219,10 +229,12 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs text-slate-400">
-            Sledování vývoje kapitálu, návratnosti investic (ROI) a vyhodnocení uložených tiketů
+            {isEn
+              ? 'Capital growth tracking, return on investment (ROI), and ticket settlement'
+              : 'Sledování vývoje kapitálu, návratnosti investic (ROI) a vyhodnocení uložených tiketů'}
           </p>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
-            Bankroll a statistiky
+            {isEn ? 'Bankroll & Statistics' : 'Bankroll a statistiky'}
           </h1>
         </div>
 
@@ -233,8 +245,16 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
               type="button"
               onClick={() => setIsNotifPopoverOpen((prev) => !prev)}
               aria-expanded={isNotifPopoverOpen}
-              aria-label="Oznámení (začátek zápasu a výhry)"
-              title="Oznámení (začátek zápasu a výhry)"
+              aria-label={
+                isEn
+                  ? 'Notifications (match start & wins)'
+                  : 'Oznámení (začátek zápasu a výhry)'
+              }
+              title={
+                isEn
+                  ? 'Notifications (match start & wins)'
+                  : 'Oznámení (začátek zápasu a výhry)'
+              }
               className={`inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
                 permissionState === 'denied' || permissionState === 'unsupported'
                   ? 'border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
@@ -255,12 +275,14 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             {isNotifPopoverOpen && (
               <div
                 role="dialog"
-                aria-label="Nastavení oznámení"
+                aria-label={isEn ? 'Notification settings' : 'Nastavení oznámení'}
                 className="absolute left-0 top-12 z-40 w-72 rounded-2xl border border-slate-700/90 bg-[#0F1623] p-4 shadow-2xl sm:left-auto sm:right-0"
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs font-semibold text-slate-100">
-                    Oznámení (začátek zápasu a výhry)
+                    {isEn
+                      ? 'Notifications (match start & wins)'
+                      : 'Oznámení (začátek zápasu a výhry)'}
                   </span>
                   <button
                     type="button"
@@ -285,13 +307,13 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
 
                 <div className="mt-3 border-t border-slate-800 pt-3">
                   <span className="block text-[11px] font-medium text-slate-400">
-                    Čas upozornění před začátkem:
+                    {isEn ? 'Alert timing before kickoff:' : 'Čas upozornění před začátkem:'}
                   </span>
                   <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                     {(
                       [
-                        { value: 15, label: '15 min předem' },
-                        { value: 0, label: 'Při začátku' },
+                        { value: 15, label: isEn ? '15 min before' : '15 min předem' },
+                        { value: 0, label: isEn ? 'At kickoff' : 'Při začátku' },
                       ] as const
                     ).map((opt) => {
                       const active = notificationLeadMinutes === opt.value;
@@ -317,9 +339,15 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
 
                 <p className="mt-2.5 text-[11px] leading-snug text-slate-400">
                   {permissionState === 'denied'
-                    ? 'Prohlížeč oznámení zablokoval. Povolte je v nastavení webu.'
+                    ? isEn
+                      ? 'Notifications are blocked by your browser. Enable them in site settings.'
+                      : 'Prohlížeč oznámení zablokoval. Povolte je v nastavení webu.'
                     : permissionState === 'unsupported'
-                    ? 'Prohlížeč nepodporuje Web Notifications API.'
+                    ? isEn
+                      ? 'This browser does not support Web Notifications API.'
+                      : 'Prohlížeč nepodporuje Web Notifications API.'
+                    : isEn
+                    ? 'Alerts are sent only for active ticket kickoffs and wins (silent on loss).'
                     : 'Posíláme pouze upozornění na start aktivních tiketů a výhry (při prohře ticho).'}
                 </p>
               </div>
@@ -332,7 +360,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 whitespace-nowrap"
           >
             <Trash2 className="h-3.5 w-3.5" />
-            <span>Začít od nuly</span>
+            <span>{isEn ? 'Start from scratch' : 'Začít od nuly'}</span>
           </button>
 
           <button
@@ -341,7 +369,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-slate-100 whitespace-nowrap"
           >
             <RotateCcw className="h-3.5 w-3.5 text-slate-400" />
-            <span>Obnovit ukázkovou bilanci</span>
+            <span>{isEn ? 'Restore demo balance' : 'Obnovit ukázkovou bilanci'}</span>
           </button>
         </div>
       </div>
@@ -349,9 +377,11 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
       {/* 4-Column KPI Grid */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-5">
-          <span className="block text-xs font-medium text-slate-400">Aktuální kapitál</span>
+          <span className="block text-xs font-medium text-slate-400">
+            {isEn ? 'Current Capital' : 'Aktuální kapitál'}
+          </span>
           <span className="mt-1.5 block font-mono text-2xl font-bold tabular-nums text-slate-50">
-            {formatCZK(metrics.currentCapital)}
+            {formatCZK(metrics.currentCapital, language)}
           </span>
           <span
             className={`mt-1 block font-mono text-xs tabular-nums ${
@@ -359,41 +389,49 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             }`}
           >
             {metrics.totalProfit >= 0 ? '+' : ''}
-            {formatCZK(metrics.totalProfit)} čistý zisk
+            {formatCZK(metrics.totalProfit, language)} {isEn ? 'net profit' : 'čistý zisk'}
           </span>
         </div>
 
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-5">
-          <span className="block text-xs font-medium text-slate-400">Celkové ROI</span>
+          <span className="block text-xs font-medium text-slate-400">
+            {isEn ? 'Total ROI' : 'Celkové ROI'}
+          </span>
           <span
             className={`mt-1.5 block font-mono text-2xl font-bold tabular-nums ${
               metrics.roi >= 0 ? 'text-emerald-400' : 'text-rose-400'
             }`}
           >
-            {formatPercent(metrics.roi, true)}
+            {formatPercent(metrics.roi, true, language)}
           </span>
           <span className="mt-1 block font-mono text-xs tabular-nums text-slate-400">
-            Vsazeno celkem {formatCZK(metrics.totalStaked)}
+            {isEn ? 'Total staked' : 'Vsazeno celkem'} {formatCZK(metrics.totalStaked, language)}
           </span>
         </div>
 
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-5">
-          <span className="block text-xs font-medium text-slate-400">Úspěšnost tiketů</span>
+          <span className="block text-xs font-medium text-slate-400">
+            {isEn ? 'Ticket Win Rate' : 'Úspěšnost tiketů'}
+          </span>
           <span className="mt-1.5 block font-mono text-2xl font-bold tabular-nums text-slate-50">
-            {formatPercent(metrics.winRate)}
+            {formatPercent(metrics.winRate, false, language)}
           </span>
           <span className="mt-1 block font-mono text-xs tabular-nums text-slate-400">
-            {metrics.wonCount} výher / {metrics.settledCount} vyhodnocených
+            {isEn
+              ? `${metrics.wonCount} won / ${metrics.settledCount} settled`
+              : `${metrics.wonCount} výher / ${metrics.settledCount} vyhodnocených`}
           </span>
         </div>
 
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-5">
-          <span className="block text-xs font-medium text-slate-400">Aktivní tikety (ve hře)</span>
+          <span className="block text-xs font-medium text-slate-400">
+            {isEn ? 'Active Tickets (In Play)' : 'Aktivní tikety (ve hře)'}
+          </span>
           <span className="mt-1.5 block font-mono text-2xl font-bold tabular-nums text-amber-300">
             {metrics.pendingCount}
           </span>
           <span className="mt-1 block font-mono text-xs tabular-nums text-slate-400">
-            Vklad ve hře {formatCZK(metrics.pendingStake)}
+            {isEn ? 'Stake in play' : 'Vklad ve hře'} {formatCZK(metrics.pendingStake, language)}
           </span>
         </div>
       </section>
@@ -402,9 +440,13 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
       <section className="rounded-2xl border border-slate-800/90 bg-[#111827] p-5 sm:p-6">
         <div className="flex flex-col gap-2 border-b border-slate-800/80 pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="font-display text-lg font-bold text-slate-50">Vývoj kapitálu v čase</h2>
+            <h2 className="font-display text-lg font-bold text-slate-50">
+              {isEn ? 'Capital Growth Over Time' : 'Vývoj kapitálu v čase'}
+            </h2>
             <p className="text-xs text-slate-400">
-              Kumulativní křivka bankrollu po každém vyhodnoceném tiketu
+              {isEn
+                ? 'Cumulative bankroll curve after each settled ticket'
+                : 'Kumulativní křivka bankrollu po každém vyhodnoceném tiketu'}
             </p>
           </div>
           {activePoint && (
@@ -413,7 +455,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                 {activePoint.dateStr} · {activePoint.label}
               </div>
               <div className="font-mono text-base font-bold tabular-nums text-slate-100">
-                {formatCZK(activePoint.balance)}
+                {formatCZK(activePoint.balance, language)}
                 {activePoint.status !== 'start' && (
                   <span
                     className={`ml-2 text-xs ${
@@ -421,7 +463,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                     }`}
                   >
                     ({activePoint.delta >= 0 ? '+' : ''}
-                    {formatCZK(activePoint.delta)})
+                    {formatCZK(activePoint.delta, language)})
                   </span>
                 )}
               </div>
@@ -434,7 +476,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             viewBox={`0 0 ${chartW} ${chartH}`}
             className="h-56 w-full min-w-[460px] sm:h-64"
             role="img"
-            aria-label="Graf vývoje kapitálu"
+            aria-label={isEn ? 'Capital growth chart' : 'Graf vývoje kapitálu'}
           >
             <defs>
               <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
@@ -464,7 +506,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                     fontSize="11"
                     fontFamily="JetBrains Mono, monospace"
                   >
-                    {val.toLocaleString('cs-CZ')}
+                    {val.toLocaleString(isEn ? 'en-US' : 'cs-CZ')}
                   </text>
                 </g>
               );
@@ -489,7 +531,8 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
             {equityPoints.map((pt, idx) => {
               const cx = getX(idx);
               const cy = getY(pt.balance);
-              const isHighlighted = hoveredIdx === idx || (hoveredIdx === null && idx === equityPoints.length - 1);
+              const isHighlighted =
+                hoveredIdx === idx || (hoveredIdx === null && idx === equityPoints.length - 1);
               const dotColor =
                 pt.status === 'lost' ? '#F43F5E' : pt.status === 'won' ? '#10B981' : '#94A3B8';
 
@@ -529,19 +572,21 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
       {/* Ticket History & Settlement */}
       <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-display text-lg font-bold text-slate-50">Historie uložených tiketů</h2>
+          <h2 className="font-display text-lg font-bold text-slate-50">
+            {isEn ? 'Saved Ticket History' : 'Historie uložených tiketů'}
+          </h2>
 
           <div
             className="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-[#111827] p-1 self-start sm:self-auto"
             role="tablist"
-            aria-label="Filtr stavu tiketů"
+            aria-label={isEn ? 'Ticket status filter' : 'Filtr stavu tiketů'}
           >
             {(
               [
-                { id: 'all', label: 'Vše' },
-                { id: 'pending', label: 'Čekající' },
-                { id: 'won', label: 'Vyhrané' },
-                { id: 'lost', label: 'Prohrané' },
+                { id: 'all', label: isEn ? 'All' : 'Vše' },
+                { id: 'pending', label: isEn ? 'Pending' : 'Čekající' },
+                { id: 'won', label: isEn ? 'Won' : 'Vyhrané' },
+                { id: 'lost', label: isEn ? 'Lost' : 'Prohrané' },
               ] as { id: StatusFilter; label: string }[]
             ).map((tab) => (
               <button
@@ -565,22 +610,31 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
         {filteredTickets.length === 0 ? (
           <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-8 text-center">
             <p className="text-sm font-medium text-slate-300">
-              V této kategorii zatím nemáte žádné tikety.
+              {isEn
+                ? 'No tickets in this category yet.'
+                : 'V této kategorii zatím nemáte žádné tikety.'}
             </p>
             <p className="mt-1 text-xs text-slate-400">
-              Vygenerujte si tiket v záložce Generátor tiketu nebo přidejte zápasy z přehledu.
+              {isEn
+                ? 'Generate a ticket in the Ticket Generator tab or add matches from the Value Bets feed.'
+                : 'Vygenerujte si tiket v záložce Generátor tiketu nebo přidejte zápasy z přehledu.'}
             </p>
           </div>
         ) : (
           <div className="space-y-3">
             {filteredTickets.map((ticket) => {
-              const dateLabel = new Date(ticket.createdAt).toLocaleString('cs-CZ', {
+              const dateLabel = new Date(ticket.createdAt).toLocaleString(locale, {
                 day: '2-digit',
                 month: '2-digit',
                 hour: '2-digit',
                 minute: '2-digit',
               });
-              const countdown = formatTicketCountdownStatus(ticket, nowMs, activeMatches);
+              const countdown = formatTicketCountdownStatus(
+                ticket,
+                nowMs,
+                activeMatches,
+                language
+              );
               const isWinHighlighted =
                 ticket.id === highlightedWinTicketId && ticket.status === 'won';
 
@@ -602,12 +656,19 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
                         <span className="font-mono tabular-nums">{dateLabel}</span>
                         <span aria-hidden="true">·</span>
-                        <span>{ticket.riskLevel}</span>
+                        <span>{translateRiskLevel(ticket.riskLevel, language)}</span>
                         <span aria-hidden="true">·</span>
-                        <span>{ticket.legs.length} příležitostí</span>
+                        <span>
+                          {ticket.legs.length}{' '}
+                          {isEn
+                            ? ticket.legs.length === 1
+                              ? 'leg'
+                              : 'legs'
+                            : 'příležitostí'}
+                        </span>
                       </div>
                       <h3 className="mt-1 font-display text-base font-bold text-slate-100">
-                        {ticket.label}
+                        {translateTicketLabel(ticket.label, language)}
                       </h3>
                       {countdown && (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -629,13 +690,15 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             <span>{countdown.label}</span>
                           </span>
                           <span className="text-[11px] text-slate-400">
-                            Nejbližší: {countdown.matchTitle}
+                            {isEn ? 'Nearest:' : 'Nejbližší:'} {countdown.matchTitle}
                           </span>
                         </div>
                       )}
                       {isWinHighlighted && (
                         <p className="mt-1.5 text-xs font-bold text-emerald-300">
-                          🏆 Výherní tiket! Vyhrál jsi +{formatCZK(ticket.potentialWin)}
+                          {isEn
+                            ? `🏆 Winning Ticket! You won +${formatCZK(ticket.potentialWin, 'en')}`
+                            : `🏆 Výherní tiket! Vyhrál jsi +${formatCZK(ticket.potentialWin, 'cs')}`}
                         </p>
                       )}
                     </div>
@@ -651,9 +714,15 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                         }`}
                       >
                         {ticket.status === 'won'
-                          ? `Výhra (+${formatCZK(ticket.profit)})`
+                          ? isEn
+                            ? `Won (+${formatCZK(ticket.profit, 'en')})`
+                            : `Výhra (+${formatCZK(ticket.profit, 'cs')})`
                           : ticket.status === 'lost'
-                          ? `Prohra (${formatCZK(ticket.profit)})`
+                          ? isEn
+                            ? `Lost (${formatCZK(ticket.profit, 'en')})`
+                            : `Prohra (${formatCZK(ticket.profit, 'cs')})`
+                          : isEn
+                          ? 'Pending settlement'
                           : 'Čeká na vyhodnocení'}
                       </span>
 
@@ -661,7 +730,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                         type="button"
                         onClick={() => onDeleteTicket(ticket.id)}
                         className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-800 hover:text-rose-400"
-                        aria-label="Smazat tiket"
+                        aria-label={isEn ? 'Delete ticket' : 'Smazat tiket'}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -680,7 +749,9 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             {leg.homeTeam} vs. {leg.awayTeam}
                           </span>
                           <span className="mx-2 text-slate-600">·</span>
-                          <span className="text-emerald-300">{leg.recommendedPick}</span>
+                          <span className="text-emerald-300">
+                            {translateRecommendedPick(leg.recommendedPick, language)}
+                          </span>
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
                           <span className="font-mono font-semibold tabular-nums text-slate-200">
@@ -690,9 +761,11 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             href={BETANO_HOME_URL}
                             target="_blank"
                             rel="noopener noreferrer"
-                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
+                            onClick={() =>
+                              onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)
+                            }
                             className="inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300"
-                            title="Otevřít na Betanu"
+                            title={isEn ? 'Open on Betano' : 'Otevřít na Betanu'}
                           >
                             <span>Betano</span>
                             <ExternalLink className="h-3 w-3" />
@@ -702,7 +775,11 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 text-slate-400 hover:text-white"
-                            title={`Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`}
+                            title={
+                              isEn
+                                ? `Search ${leg.homeTeam} vs. ${leg.awayTeam} on Tipsport`
+                                : `Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`
+                            }
                           >
                             <span>Tipsport</span>
                             <ExternalLink className="h-3 w-3" />
@@ -716,21 +793,27 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                   <div className="mt-4 flex flex-col gap-3 border-t border-slate-800/70 pt-3.5 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-wrap items-center gap-5 text-xs">
                       <div>
-                        <span className="text-slate-400">Celkový kurz: </span>
+                        <span className="text-slate-400">
+                          {isEn ? 'Total Odds:' : 'Celkový kurz:'}{' '}
+                        </span>
                         <strong className="font-mono tabular-nums text-slate-100">
                           {formatOdds(ticket.totalOdds)}
                         </strong>
                       </div>
                       <div>
-                        <span className="text-slate-400">Vklad: </span>
+                        <span className="text-slate-400">
+                          {isEn ? 'Stake:' : 'Vklad:'}{' '}
+                        </span>
                         <strong className="font-mono tabular-nums text-slate-100">
-                          {formatCZK(ticket.actualStake)}
+                          {formatCZK(ticket.actualStake, language)}
                         </strong>
                       </div>
                       <div>
-                        <span className="text-slate-400">Možná výhra: </span>
+                        <span className="text-slate-400">
+                          {isEn ? 'Potential Win:' : 'Možná výhra:'}{' '}
+                        </span>
                         <strong className="font-mono tabular-nums text-emerald-300">
-                          {formatCZK(ticket.potentialWin)}
+                          {formatCZK(ticket.potentialWin, language)}
                         </strong>
                       </div>
                     </div>
@@ -743,7 +826,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                           className="inline-flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 sm:flex-initial"
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          <span>Výhra</span>
+                          <span>{isEn ? 'Won' : 'Výhra'}</span>
                         </button>
                         <button
                           type="button"
@@ -751,7 +834,7 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                           className="inline-flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3.5 py-2 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 sm:flex-initial"
                         >
                           <XCircle className="h-4 w-4" />
-                          <span>Prohra</span>
+                          <span>{isEn ? 'Lost' : 'Prohra'}</span>
                         </button>
                       </div>
                     )}

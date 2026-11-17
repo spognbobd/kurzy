@@ -1,3 +1,4 @@
+import { AppLanguage } from '../i18n/LanguageContext';
 import {
   EstimatedRiskBadge,
   FormResult,
@@ -28,34 +29,52 @@ export function parseAmountInput(raw: string, fallback: number, min = 5): number
   return Math.max(min, Math.round(parsed));
 }
 
-export function formatCZK(value: number): string {
+export function formatCZK(value: number, lang: AppLanguage = 'cs'): string {
+  const rounded = Math.round(value);
+  if (lang === 'en') {
+    return `${rounded.toLocaleString('en-US')} CZK`;
+  }
   return new Intl.NumberFormat('cs-CZ', {
     style: 'currency',
     currency: 'CZK',
     maximumFractionDigits: 0,
-  }).format(Math.round(value));
+  }).format(rounded);
 }
 
 export function formatOdds(value: number): string {
   return value.toFixed(2);
 }
 
-export function formatPercent(value: number, showSign = false): string {
+export function formatPercent(value: number, showSign = false, lang: AppLanguage = 'cs'): string {
+  const sign = showSign && value > 0 ? '+' : '';
+  if (lang === 'en') {
+    return `${sign}${value.toFixed(1)}%`;
+  }
   const formatted = value.toFixed(1).replace('.', ',');
-  if (showSign && value > 0) return `+${formatted} %`;
-  return `${formatted} %`;
+  return `${sign}${formatted} %`;
 }
 
-export function formatUpdateTimeLabel(timestampMs: number | null): string | null {
+export function formatUpdateTimeLabel(
+  timestampMs: number | null,
+  lang: AppLanguage = 'cs'
+): string | null {
   if (!timestampMs || !Number.isFinite(timestampMs)) return null;
   const dt = new Date(timestampMs);
-  const timeStr = dt.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+  const timeStr = dt.toLocaleTimeString(lang === 'en' ? 'en-GB' : 'cs-CZ', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
   const isToday = dt.toDateString() === new Date().toDateString();
   if (isToday) {
-    return `Kurzy aktualizovány v ${timeStr}`;
+    return lang === 'en' ? `Odds updated at ${timeStr}` : `Kurzy aktualizovány v ${timeStr}`;
   }
-  const dateStr = dt.toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' });
-  return `Kurzy aktualizovány ${dateStr} v ${timeStr}`;
+  const dateStr = dt.toLocaleDateString(lang === 'en' ? 'en-GB' : 'cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+  });
+  return lang === 'en'
+    ? `Odds updated ${dateStr} at ${timeStr}`
+    : `Kurzy aktualizovány ${dateStr} v ${timeStr}`;
 }
 
 export const BETANO_HOME_URL = 'https://www.betano.cz/';

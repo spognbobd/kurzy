@@ -12,6 +12,14 @@ import {
   Trash2,
   TrendingUp,
 } from 'lucide-react';
+import { AppLanguage, useLanguage } from '../i18n/LanguageContext';
+import {
+  localizeKickoffTime,
+  translateMarketLabel,
+  translateRecommendedPick,
+  translateSport,
+  translateTimeWindow,
+} from '../i18n/translations';
 import { MatchAnalysis, SportFilter, TicketLeg, TimeWindow } from '../types/betting';
 import {
   BETANO_HOME_URL,
@@ -22,8 +30,10 @@ import {
 } from '../utils/analyticsEngine';
 import {
   fetchSingleMatchReasoning,
+  getCachedReasonForLang,
   loadCachedMatchReasons,
   saveCachedMatchReasons,
+  setCachedReasonForLang,
 } from '../services/geminiReasoningService';
 
 interface MatchFeedProps {
@@ -57,13 +67,6 @@ const TIME_WINDOWS: (TimeWindow | 'Vše')[] = ['Dnes', 'Zítra', 'Víkend', 'Vš
 
 type SortMode = 'probability' | 'value' | 'kickoff' | 'lowest_odds';
 
-const SORT_OPTIONS: { id: SortMode; label: string }[] = [
-  { id: 'value', label: 'Nejvyšší Value' },
-  { id: 'probability', label: 'Nejvyšší pravděpodobnost' },
-  { id: 'kickoff', label: 'Čas výkopu' },
-  { id: 'lowest_odds', label: 'Nejnižší kurz' },
-];
-
 function isMatchPositiveValue(m: MatchAnalysis): boolean {
   return m.valueScore > 0 && Number(m.valueScore.toFixed(1)) > 0 && !isSuspiciousValueMatch(m);
 }
@@ -73,16 +76,25 @@ function getKickoffTimestamp(m: MatchAnalysis): number {
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
-function formatCompactUpdatedTime(timestampMs: number | null): string | null {
+function formatCompactUpdatedTime(
+  timestampMs: number | null,
+  lang: AppLanguage
+): string | null {
   if (!timestampMs || !Number.isFinite(timestampMs)) return null;
   const dt = new Date(timestampMs);
-  const hhmm = dt.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+  const hhmm = dt.toLocaleTimeString(lang === 'en' ? 'en-GB' : 'cs-CZ', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
   const isToday = dt.toDateString() === new Date().toDateString();
   if (isToday) {
-    return `Aktualizováno ${hhmm}`;
+    return lang === 'en' ? `Updated ${hhmm}` : `Aktualizováno ${hhmm}`;
   }
-  const dateStr = dt.toLocaleDateString('cs-CZ', { day: '2-digit', month: '2-digit' });
-  return `Aktualizováno ${dateStr} ${hhmm}`;
+  const dateStr = dt.toLocaleDateString(lang === 'en' ? 'en-GB' : 'cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+  });
+  return lang === 'en' ? `Updated ${dateStr} ${hhmm}` : `Aktualizováno ${dateStr} ${hhmm}`;
 }
 
 function matchToTicketLeg(m: MatchAnalysis): TicketLeg {
@@ -116,7 +128,7 @@ function renderFormattedReasoning(text: string) {
         const colonIdx = para.indexOf(':');
         const hasKnownPrefix =
           colonIdx > 0 &&
-          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu)/i.test(
+          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu|Current form|Opponent strength|Odds & Market|Implied vs\. Real Probability|Ticket Verdict)/i.test(
             para.slice(0, colonIdx)
           );
 
@@ -126,7 +138,7 @@ function renderFormattedReasoning(text: string) {
 
         const label = para.slice(0, colonIdx + 1);
         const body = para.slice(colonIdx + 1).trim();
-        const isVerdict = /^Verdikt k tiketu/i.test(label);
+        const isVerdict = /^(Verdikt k tiketu|Ticket Verdict)/i.test(label);
 
         return (
           <p key={idx}>
@@ -156,6 +168,9 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   onOpenCustomMatchModal,
   onDeleteCustomMatch,
 }) => {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+
   const [sportFilter, setSportFilter] = useState<SportFilter>('Vše');
   const [timeWindow, setTimeWindow] = useState<TimeWindow | 'Vše'>('Dnes');
   const [onlyValueBets, setOnlyValueBets] = useState(false);
@@ -164,7 +179,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
   const [aiModels, setAiModels] = useState<Record<string, string>>({});
   const [statFallbackReasons, setStatFallbackReasons] = useState<
-    Record<string, { text: string; apiStatus?: string }>
+    Record<string, { text: string; apiStatus?: string; lang: AppLanguage }>
   >({});
   const [expandedMatchIds, setExpandedMatchIds] = useState<Record<string, boolean>>({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
@@ -173,12 +188,24 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
 
   useEffect(() => {
     setStatFallbackReasons({});
-  }, [trimmedGeminiKey]);
+  }, [trimmedGeminiKey, language]);
+
+  const sortOptions: { id: SortMode; label: string }[] = [
+    { id: 'value', label: isEn ? 'Highest Value' : 'Nejvyšší Value' },
+    { id: 'probability', label: isEn ? 'Highest Probability' : 'Nejvyšší pravděpodobnost' },
+    { id: 'kickoff', label: isEn ? 'Kickoff Time' : 'Čas výkopu' },
+    { id: 'lowest_odds', label: isEn ? 'Lowest Odds' : 'Nejnižší kurz' },
+  ];
 
   const handleOpenOrFetchAnalysis = async (match: MatchAnalysis) => {
     if (loadingMatchIds[match.id]) return;
 
-    const cachedText = aiReasons[match.id] ?? statFallbackReasons[match.id]?.text;
+    const cachedGemini = getCachedReasonForLang(aiReasons, match.id, language);
+    const statCached =
+      statFallbackReasons[match.id]?.lang === language
+        ? statFallbackReasons[match.id]?.text
+        : undefined;
+    const cachedText = cachedGemini ?? statCached;
     if (cachedText) {
       setExpandedMatchIds((prev) => ({ ...prev, [match.id]: true }));
       return;
@@ -186,10 +213,14 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
 
     setLoadingMatchIds((prev) => ({ ...prev, [match.id]: true }));
     try {
-      const result = await fetchSingleMatchReasoning(matchToTicketLeg(match), trimmedGeminiKey);
+      const result = await fetchSingleMatchReasoning(
+        matchToTicketLeg(match),
+        trimmedGeminiKey,
+        language
+      );
       if (result.source === 'gemini') {
         setAiReasons((prev) => {
-          const next = { ...prev, [match.id]: result.text };
+          const next = setCachedReasonForLang(prev, match.id, language, result.text);
           saveCachedMatchReasons(next);
           return next;
         });
@@ -199,7 +230,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
       } else {
         setStatFallbackReasons((prev) => ({
           ...prev,
-          [match.id]: { text: result.text, apiStatus: result.apiStatus },
+          [match.id]: { text: result.text, apiStatus: result.apiStatus, lang: language },
         }));
       }
       setExpandedMatchIds((prev) => ({ ...prev, [match.id]: true }));
@@ -268,16 +299,18 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
     return sorted;
   }, [matches, sportFilter, timeWindow, onlyValueBets, sortMode, searchQuery]);
 
-  const compactTimeLabel = formatCompactUpdatedTime(lastUpdatedAt);
+  const compactTimeLabel = formatCompactUpdatedTime(lastUpdatedAt, language);
   const statusPrefix = isDemoMode
-    ? 'Demo režim'
-    : compactTimeLabel ?? 'Živá data';
+    ? isEn
+      ? 'Demo Mode'
+      : 'Demo režim'
+    : compactTimeLabel ?? (isEn ? 'Live Data' : 'Živá data');
 
   return (
     <div className="space-y-3.5 sm:space-y-4">
       {/* Compact Single-Row Status & Action Bar */}
       <section
-        aria-label="Stav kurzů a rychlé akce"
+        aria-label={isEn ? 'Odds status and quick actions' : 'Stav kurzů a rychlé akce'}
         className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800/90 bg-[#111827] px-3.5 py-2.5 sm:px-4"
       >
         <div className="min-w-0 font-mono text-xs tabular-nums text-slate-300">
@@ -285,10 +318,17 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           <span className="mx-1.5 text-slate-600" aria-hidden="true">
             ·
           </span>
-          <span>
-            <strong className="text-slate-100">{summaryStats.valueCount}</strong> Value Betů z{' '}
-            {summaryStats.totalMatches}
-          </span>
+          {isEn ? (
+            <span>
+              <strong className="text-slate-100">{summaryStats.valueCount}</strong> Value Bets of{' '}
+              {summaryStats.totalMatches}
+            </span>
+          ) : (
+            <span>
+              <strong className="text-slate-100">{summaryStats.valueCount}</strong> Value Betů z{' '}
+              {summaryStats.totalMatches}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -296,8 +336,24 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
             type="button"
             onClick={isDemoMode ? onOpenSettings : onRefreshLive}
             disabled={!isDemoMode && isLoadingLive}
-            aria-label={isDemoMode ? 'Připojit API klíče' : 'Aktualizovat kurzy z API'}
-            title={isDemoMode ? 'Připojit API klíče v Nastavení' : 'Aktualizovat kurzy z API'}
+            aria-label={
+              isDemoMode
+                ? isEn
+                  ? 'Connect API keys'
+                  : 'Připojit API klíče'
+                : isEn
+                ? 'Refresh odds from API'
+                : 'Aktualizovat kurzy z API'
+            }
+            title={
+              isDemoMode
+                ? isEn
+                  ? 'Connect API keys in Settings'
+                  : 'Připojit API klíče v Nastavení'
+                : isEn
+                ? 'Refresh odds from API'
+                : 'Aktualizovat kurzy z API'
+            }
             className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] text-emerald-400 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50"
           >
             {isDemoMode ? (
@@ -312,7 +368,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
             onClick={onOpenCustomMatchModal}
             className="inline-flex min-h-[40px] items-center justify-center rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 transition-colors hover:bg-emerald-400 whitespace-nowrap"
           >
-            + Vlastní zápas
+            {isEn ? '+ Custom Match' : '+ Vlastní zápas'}
           </button>
         </div>
       </section>
@@ -328,7 +384,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
             onClick={onOpenSettings}
             className="font-semibold text-amber-300 underline hover:text-amber-100 whitespace-nowrap self-start sm:self-auto"
           >
-            Zkontrolovat nastavení API
+            {isEn ? 'Check API Settings' : 'Zkontrolovat nastavení API'}
           </button>
         </div>
       )}
@@ -340,7 +396,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           <div
             className="flex items-center gap-1.5 overflow-x-auto pb-0.5 lg:pb-0"
             role="tablist"
-            aria-label="Filtr sportů"
+            aria-label={isEn ? 'Sport filter' : 'Filtr sportů'}
           >
             {SPORT_FILTERS.map((sport) => {
               const active = sportFilter === sport;
@@ -357,7 +413,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       : 'bg-slate-900/90 text-slate-300 hover:bg-slate-800 hover:text-slate-100'
                   }`}
                 >
-                  {sport}
+                  {translateSport(sport, language)}
                 </button>
               );
             })}
@@ -367,11 +423,16 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
           <div
             className="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-[#0B101B] p-1 self-start lg:self-auto"
             role="tablist"
-            aria-label="Časové okno"
+            aria-label={isEn ? 'Time window' : 'Časové okno'}
           >
             {TIME_WINDOWS.map((win) => {
               const active = timeWindow === win;
-              const label = win === 'Vše' ? 'Všechny dny' : win;
+              const label =
+                win === 'Vše'
+                  ? isEn
+                    ? 'All Days'
+                    : 'Všechny dny'
+                  : translateTimeWindow(win, language);
               return (
                 <button
                   key={win}
@@ -400,7 +461,9 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Hledat tým, hráče nebo ligu..."
+              placeholder={
+                isEn ? 'Search team, player, or league...' : 'Hledat tým, hráče nebo ligu...'
+              }
               className="min-h-[40px] w-full rounded-xl border border-slate-800 bg-[#090D16] pl-9 pr-3.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
@@ -417,18 +480,18 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
               }`}
             >
               <TrendingUp className="h-3.5 w-3.5" />
-              <span>Jen pozitivní Value (+EV)</span>
+              <span>{isEn ? 'Positive Value (+EV) Only' : 'Jen pozitivní Value (+EV)'}</span>
             </button>
 
             <div className="relative flex-1 sm:flex-initial">
               <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-400" />
               <select
-                aria-label="Seřadit zápasy podle"
+                aria-label={isEn ? 'Sort matches by' : 'Seřadit zápasy podle'}
                 value={sortMode}
                 onChange={(e) => setSortMode(e.target.value as SortMode)}
                 className="min-h-[40px] w-full appearance-none rounded-xl border border-slate-800 bg-[#090D16] pl-8 pr-8 text-xs font-medium text-slate-200 transition-colors hover:border-slate-700 focus:border-emerald-500/60 focus:outline-none"
               >
-                {SORT_OPTIONS.map((option) => (
+                {sortOptions.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.label}
                   </option>
@@ -454,12 +517,20 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
         <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-7 text-center">
           <p className="font-display text-base font-semibold text-slate-200 sm:text-lg">
             {matches.length === 0 && !isDemoMode
-              ? 'Živé zápasy z API se nepodařilo načíst'
+              ? isEn
+                ? 'Could not load live matches from API'
+                : 'Živé zápasy z API se nepodařilo načíst'
+              : isEn
+              ? 'No matches found for selected filters'
               : 'Pro vybrané filtry nebyly nalezeny žádné zápasy'}
           </p>
           <p className="mt-1 text-xs text-slate-400 sm:text-sm">
             {matches.length === 0 && !isDemoMode
-              ? 'Demo režim je vypnutý. Zkontrolujte chybu výše, upravte API klíč v Nastavení nebo zkuste kurzy načíst znovu.'
+              ? isEn
+                ? 'Demo mode is off. Check the error above, update your API key in Settings, or try reloading odds.'
+                : 'Demo režim je vypnutý. Zkontrolujte chybu výše, upravte API klíč v Nastavení nebo zkuste kurzy načíst znovu.'
+              : isEn
+              ? 'Try switching the time window to All Days or disabling the Positive Value filter.'
               : 'Zkuste přepnout časové okno na Všechny dny nebo zrušit filtr pozitivního Value.'}
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-2.5">
@@ -470,14 +541,14 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   onClick={onRefreshLive}
                   className="min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
                 >
-                  Zkusit načíst znovu
+                  {isEn ? 'Try Loading Again' : 'Zkusit načíst znovu'}
                 </button>
                 <button
                   type="button"
                   onClick={onOpenSettings}
                   className="min-h-[42px] rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800"
                 >
-                  Otevřít Nastavení
+                  {isEn ? 'Open Settings' : 'Otevřít Nastavení'}
                 </button>
               </>
             ) : (
@@ -491,7 +562,7 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                 }}
                 className="min-h-[42px] rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition-colors hover:bg-emerald-400"
               >
-                Zobrazit všechny zápasy
+                {isEn ? 'Show All Matches' : 'Zobrazit všechny zápasy'}
               </button>
             )}
           </div>
@@ -518,11 +589,15 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                   {/* Clean Unboxed Metadata Row */}
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div className="flex flex-wrap items-center gap-1.5 text-slate-400">
-                      <span className="font-medium text-slate-300">{match.sport}</span>
+                      <span className="font-medium text-slate-300">
+                        {translateSport(match.sport, language)}
+                      </span>
                       <span aria-hidden="true">·</span>
                       <span>{match.league}</span>
                       <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">{match.kickoffTime}</span>
+                      <span className="font-mono tabular-nums">
+                        {localizeKickoffTime(match.kickoffTime, language)}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -536,20 +611,30 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                         }`}
                       >
                         {isSuspiciousValue
-                          ? 'Podezřelá odchylka '
+                          ? isEn
+                            ? 'Suspicious Variance '
+                            : 'Podezřelá odchylka '
                           : isPositiveValue
                           ? 'Value Bet '
                           : match.isCustom && match.valueScore === 0
-                          ? 'Vlastní · Value '
+                          ? isEn
+                            ? 'Custom · Value '
+                            : 'Vlastní · Value '
+                          : isEn
+                          ? 'No Edge '
                           : 'Bez výhody '}
-                        {formatPercent(match.valueScore, true)}
+                        {formatPercent(match.valueScore, true, language)}
                       </span>
                       {match.isCustom && (
                         <button
                           type="button"
                           onClick={() => onDeleteCustomMatch(match.id)}
-                          title="Smazat vlastní zápas"
-                          aria-label={`Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`}
+                          title={isEn ? 'Delete custom match' : 'Smazat vlastní zápas'}
+                          aria-label={
+                            isEn
+                              ? `Delete custom match ${match.homeTeam} vs. ${match.awayTeam}`
+                              : `Smazat vlastní zápas ${match.homeTeam} vs. ${match.awayTeam}`
+                          }
                           className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -565,8 +650,12 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       {match.awayTeam}
                     </h2>
                     <p className="mt-0.5 text-xs text-slate-300 sm:text-sm">
-                      <span className="text-slate-400">{match.marketLabel}:</span>{' '}
-                      <span className="font-semibold text-emerald-300">{match.recommendedPick}</span>
+                      <span className="text-slate-400">
+                        {translateMarketLabel(match.marketLabel, language)}:
+                      </span>{' '}
+                      <span className="font-semibold text-emerald-300">
+                        {translateRecommendedPick(match.recommendedPick, language)}
+                      </span>
                     </p>
                   </div>
 
@@ -575,14 +664,18 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       role="alert"
                       className="mt-2.5 rounded-xl border border-amber-400/60 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-200"
                     >
-                      ⚠️ Ověř typ trhu na Betanu (zákl. doba vs. do rozhodnutí)
+                      {isEn
+                        ? '⚠️ Verify market type on Betano (regulation vs. incl. OT)'
+                        : '⚠️ Ověř typ trhu na Betanu (zákl. doba vs. do rozhodnutí)'}
                     </div>
                   )}
 
                   {/* Factual Odds & Probability Strip (No simulated form or H2H) */}
                   <div className="mt-3 grid grid-cols-3 divide-x divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B] py-2">
                     <div className="px-2.5 text-center">
-                      <span className="block text-[11px] text-slate-400">Kurz Betano</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {isEn ? 'Betano Odds' : 'Kurz Betano'}
+                      </span>
                       <span
                         className={`mt-0.5 block font-mono text-sm font-bold tabular-nums sm:text-base ${
                           match.odds.betano > match.odds.marketAvg
@@ -594,24 +687,31 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                       </span>
                     </div>
                     <div className="px-2.5 text-center">
-                      <span className="block text-[11px] text-slate-400">Průměr trhu</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {isEn ? 'Market Avg' : 'Průměr trhu'}
+                      </span>
                       <span className="mt-0.5 block font-mono text-sm font-semibold tabular-nums text-slate-300 sm:text-base">
                         {formatOdds(match.odds.marketAvg)}
                       </span>
                     </div>
                     <div className="px-2.5 text-center">
-                      <span className="block text-[11px] text-slate-400">Šance na výhru</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {isEn ? 'Win Probability' : 'Šance na výhru'}
+                      </span>
                       <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-100 sm:text-base">
-                        {formatPercent(match.aiProbability)}
+                        {formatPercent(match.aiProbability, false, language)}
                       </span>
                     </div>
                   </div>
 
                   {/* On-Click Collapsible AI Analysis */}
                   {(() => {
-                    const geminiReason = aiReasons[match.id];
-                    const statFallback = statFallbackReasons[match.id];
-                    const activeReason = geminiReason || statFallback?.text;
+                    const geminiReason = getCachedReasonForLang(aiReasons, match.id, language);
+                    const statEntry =
+                      statFallbackReasons[match.id]?.lang === language
+                        ? statFallbackReasons[match.id]
+                        : undefined;
+                    const activeReason = geminiReason || statEntry?.text;
                     const isExpanded = Boolean(expandedMatchIds[match.id] && activeReason);
                     const isLoadingReason = Boolean(loadingMatchIds[match.id]);
 
@@ -624,7 +724,11 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                                 <Sparkles className="h-3 w-3 shrink-0" />
                                 <span>
                                   {geminiReason
-                                    ? `${aiModels[match.id] ?? 'gemini-3-flash-preview'} · AI analýza`
+                                    ? `${aiModels[match.id] ?? 'gemini-3-flash-preview'} · ${
+                                        isEn ? 'AI Analysis' : 'AI analýza'
+                                      }`
+                                    : isEn
+                                    ? 'Statistical Match Breakdown'
                                     : 'Statistický rozbor zápasu'}
                                 </span>
                               </span>
@@ -635,15 +739,15 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                                 }
                                 className="inline-flex min-h-[28px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2 py-0.5 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white"
                               >
-                                <span>Sbalit</span>
+                                <span>{isEn ? 'Collapse' : 'Sbalit'}</span>
                                 <ChevronUp className="h-3.5 w-3.5" />
                               </button>
                             </div>
                             {renderFormattedReasoning(activeReason)}
                           </div>
-                          {!geminiReason && statFallback?.apiStatus && (
+                          {!geminiReason && statEntry?.apiStatus && (
                             <p className="mt-1 px-1 font-mono text-[11px] leading-snug text-slate-500">
-                              Stav API: {statFallback.apiStatus}
+                              {isEn ? 'API status:' : 'Stav API:'} {statEntry.apiStatus}
                             </p>
                           )}
                         </div>
@@ -665,9 +769,15 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                           )}
                           <span>
                             {isLoadingReason
-                              ? 'Načítám AI analýzu...'
+                              ? isEn
+                                ? 'Loading AI analysis...'
+                                : 'Načítám AI analýzu...'
                               : activeReason
-                              ? 'Zobrazit AI analýzu (uloženo)'
+                              ? isEn
+                                ? 'Show AI Analysis (saved)'
+                                : 'Zobrazit AI analýzu (uloženo)'
+                              : isEn
+                              ? 'Show AI Analysis'
                               : 'Zobrazit AI analýzu'}
                           </span>
                         </button>
@@ -690,10 +800,10 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     {isSelected ? (
                       <>
                         <Check className="h-4 w-4 shrink-0" />
-                        <span>Na tiketu</span>
+                        <span>{isEn ? 'On Slip' : 'Na tiketu'}</span>
                       </>
                     ) : (
-                      <span>+ Přidat na tiket</span>
+                      <span>{isEn ? '+ Add to Slip' : '+ Přidat na tiket'}</span>
                     )}
                   </button>
 
@@ -712,7 +822,11 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     href={buildTipsportSearchUrl(match.homeTeam, match.awayTeam)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`Vyhledat ${match.homeTeam} vs. ${match.awayTeam} na Tipsportu`}
+                    title={
+                      isEn
+                        ? `Search ${match.homeTeam} vs. ${match.awayTeam} on Tipsport`
+                        : `Vyhledat ${match.homeTeam} vs. ${match.awayTeam} na Tipsportu`
+                    }
                     className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/90 px-2.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:px-3 sm:text-sm"
                   >
                     <span>Tipsport</span>

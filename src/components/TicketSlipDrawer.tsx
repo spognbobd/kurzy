@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { BookmarkCheck, ExternalLink, Trash2, X } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
+import { translateRecommendedPick, translateSport } from '../i18n/translations';
 import { MatchAnalysis, Ticket } from '../types/betting';
 import {
   BETANO_HOME_URL,
@@ -33,6 +35,9 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
   onSaveTicket,
   onOpenBetano,
 }) => {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+
   const totalOdds = Number(
     selectedMatches.reduce((acc, m) => acc * m.odds.betano, 1).toFixed(2)
   );
@@ -102,7 +107,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
       className="fixed inset-0 z-50 flex items-end justify-end bg-black/65 backdrop-blur-sm sm:items-stretch"
       role="dialog"
       aria-modal="true"
-      aria-label="Aktuální tiket"
+      aria-label={isEn ? 'Current ticket slip' : 'Aktuální tiket'}
     >
       <div className="flex max-h-[90vh] w-full flex-col rounded-t-3xl border-t border-slate-800 bg-[#0F1623] shadow-2xl sm:max-h-full sm:max-w-md sm:rounded-none sm:border-l sm:border-t-0">
         {/* Mobile grab handle */}
@@ -111,15 +116,19 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
           <div>
             <h2 className="font-display text-lg font-bold text-slate-50">
-              Váš tiket ({selectedMatches.length})
+              {isEn ? `Your Slip (${selectedMatches.length})` : `Váš tiket (${selectedMatches.length})`}
             </h2>
-            <p className="text-xs text-slate-400">Ruční výběr zápasů ke kontrole a uložení</p>
+            <p className="text-xs text-slate-400">
+              {isEn
+                ? 'Manual match selection for review and saving'
+                : 'Ruční výběr zápasů ke kontrole a uložení'}
+            </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
-            aria-label="Zavřít tiket"
+            aria-label={isEn ? 'Close slip' : 'Zavřít tiket'}
           >
             <X className="h-5 w-5" />
           </button>
@@ -129,10 +138,12 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
           {selectedMatches.length === 0 ? (
             <div className="py-12 text-center">
               <p className="font-display text-base font-semibold text-slate-200">
-                Tiket je zatím prázdný
+                {isEn ? 'Your slip is empty' : 'Tiket je zatím prázdný'}
               </p>
               <p className="mt-1.5 text-xs text-slate-400">
-                Klikněte na tlačítko Přidat na tiket u libovolného zápasu v přehledu.
+                {isEn
+                  ? 'Tap "+ Add to Slip" on any match in the Value Bets feed.'
+                  : 'Klikněte na tlačítko Přidat na tiket u libovolného zápasu v přehledu.'}
               </p>
             </div>
           ) : (
@@ -145,20 +156,24 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <span className="block text-[11px] text-slate-400">
-                        {m.sport} · {m.league}
+                        {translateSport(m.sport, language)} · {m.league}
                       </span>
                       <p className="mt-0.5 truncate font-display text-sm font-bold text-slate-100">
                         {m.homeTeam} vs. {m.awayTeam}
                       </p>
                       <p className="mt-1 text-xs font-semibold text-emerald-300">
-                        {m.recommendedPick}
+                        {translateRecommendedPick(m.recommendedPick, language)}
                       </p>
                     </div>
                     <button
                       type="button"
                       onClick={() => onRemoveMatch(m.id)}
                       className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-rose-400"
-                      aria-label={`Odebrat ${m.homeTeam} vs. ${m.awayTeam}`}
+                      aria-label={
+                        isEn
+                          ? `Remove ${m.homeTeam} vs. ${m.awayTeam}`
+                          : `Odebrat ${m.homeTeam} vs. ${m.awayTeam}`
+                      }
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -167,9 +182,11 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                   <div className="mt-2.5 flex items-center justify-between border-t border-slate-800/70 pt-2.5 text-xs">
                     <div className="flex items-center gap-3 font-mono tabular-nums">
                       <span className="font-bold text-slate-100">
-                        Kurz {formatOdds(m.odds.betano)}
+                        {isEn ? 'Odds' : 'Kurz'} {formatOdds(m.odds.betano)}
                       </span>
-                      <span className="text-slate-400">AI {formatPercent(m.aiProbability)}</span>
+                      <span className="text-slate-400">
+                        AI {formatPercent(m.aiProbability, false, language)}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
                       <a
@@ -186,7 +203,11 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                         href={buildTipsportSearchUrl(m.homeTeam, m.awayTeam)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        title={`Vyhledat ${m.homeTeam} vs. ${m.awayTeam} na Tipsportu`}
+                        title={
+                          isEn
+                            ? `Search ${m.homeTeam} vs. ${m.awayTeam} on Tipsport`
+                            : `Vyhledat ${m.homeTeam} vs. ${m.awayTeam} na Tipsportu`
+                        }
                         className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-white"
                       >
                         <span>Tipsport</span>
@@ -204,21 +225,27 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
           <div className="border-t border-slate-800 bg-[#0B101B] p-5 pb-safe">
             <div className="grid grid-cols-3 gap-2 text-center">
               <div className="rounded-xl border border-slate-800/80 bg-[#111827] p-2.5">
-                <span className="block text-[11px] text-slate-400">Celkový kurz</span>
+                <span className="block text-[11px] text-slate-400">
+                  {isEn ? 'Total Odds' : 'Celkový kurz'}
+                </span>
                 <span className="font-mono text-base font-bold tabular-nums text-emerald-400">
                   {formatOdds(totalOdds)}
                 </span>
               </div>
               <div className="rounded-xl border border-slate-800/80 bg-[#111827] p-2.5">
-                <span className="block text-[11px] text-slate-400">Šance AI</span>
+                <span className="block text-[11px] text-slate-400">
+                  {isEn ? 'Win Prob.' : 'Šance AI'}
+                </span>
                 <span className="font-mono text-base font-bold tabular-nums text-slate-100">
-                  {formatPercent(jointProb)}
+                  {formatPercent(jointProb, false, language)}
                 </span>
               </div>
               <div className="rounded-xl border border-slate-800/80 bg-[#111827] p-2.5">
-                <span className="block text-[11px] text-slate-400">Výhra</span>
+                <span className="block text-[11px] text-slate-400">
+                  {isEn ? 'Win' : 'Výhra'}
+                </span>
                 <span className="font-mono text-base font-bold tabular-nums text-emerald-300">
-                  {formatCZK(potentialWin)}
+                  {formatCZK(potentialWin, language)}
                 </span>
               </div>
             </div>
@@ -226,7 +253,9 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
             <div className="mt-3 flex items-center gap-3">
               <div className="flex-1">
                 <label htmlFor="slip-stake" className="block text-[11px] text-slate-400">
-                  Vklad v Kč (doporučeno {formatCZK(recommendedStake)})
+                  {isEn
+                    ? `Stake in CZK (rec. ${formatCZK(recommendedStake, 'en')})`
+                    : `Vklad v Kč (doporučeno ${formatCZK(recommendedStake, 'cs')})`}
                 </label>
                 <input
                   id="slip-stake"
@@ -243,7 +272,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                 onClick={onClearSlip}
                 className="mt-5 min-h-[42px] rounded-xl border border-slate-700 px-3.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
               >
-                Vymazat
+                {isEn ? 'Clear' : 'Vymazat'}
               </button>
             </div>
 
@@ -253,7 +282,7 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
               className="mt-3 inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400"
             >
               <BookmarkCheck className="h-4 w-4" />
-              <span>Uložit tiket do Bankrollu</span>
+              <span>{isEn ? 'Save Ticket to Bankroll' : 'Uložit tiket do Bankrollu'}</span>
             </button>
           </div>
         )}

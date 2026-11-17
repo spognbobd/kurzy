@@ -6,11 +6,13 @@ import {
   Check,
   Clock,
   Database,
+  Globe,
   KeyRound,
   RefreshCw,
   Shield,
   Smartphone,
 } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
 import { AppSettings, NotificationLeadMinutes } from '../types/betting';
 import {
   formatUpdateTimeLabel,
@@ -45,6 +47,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   lastUpdatedAt,
   remainingQuota,
 }) => {
+  const { language, setLanguage } = useLanguage();
+  const isEn = language === 'en';
+
   const [oddsKey, setOddsKey] = useState(settings.theOddsApiKey);
   const [sportsKey, setSportsKey] = useState(settings.apiSportsKey);
   const [geminiKey, setGeminiKey] = useState((settings.geminiApiKey ?? '').trim());
@@ -142,16 +147,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       : parsedQuota < 80
       ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
       : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
-  const lastUpdateLabel = formatUpdateTimeLabel(lastUpdatedAt);
+  const lastUpdateLabel = formatUpdateTimeLabel(lastUpdatedAt, language);
 
   return (
     <div className="space-y-6">
       <div>
         <p className="text-xs text-slate-400">
-          Lokální uložení API klíčů v prohlížeči (localStorage), konfigurace bankrollu a instalace PWA
+          {isEn
+            ? 'Local browser storage for API keys (localStorage), bankroll setup, language & PWA install'
+            : 'Lokální uložení API klíčů v prohlížeči (localStorage), konfigurace bankrollu a instalace PWA'}
         </p>
         <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
-          Nastavení a zdroje dat
+          {isEn ? 'Settings & Data Sources' : 'Nastavení a zdroje dat'}
         </h1>
       </div>
 
@@ -168,21 +175,79 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
               <div>
                 <h2 className="font-display text-base font-bold text-slate-100">
-                  API integrace a Demo režim
+                  {isEn ? 'API Integrations & Demo Mode' : 'API integrace a Demo režim'}
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Klíče zůstávají výhradně ve vašem prohlížeči (localStorage).
+                  {isEn
+                    ? 'Your keys stay strictly in your browser (localStorage).'
+                    : 'Klíče zůstávají výhradně ve vašem prohlížeči (localStorage).'}
                 </p>
               </div>
+            </div>
+          </div>
+
+          {/* App Language Switcher */}
+          <div className="flex flex-col gap-3 rounded-xl border border-slate-800/80 bg-[#0B101B] p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2.5">
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-emerald-400">
+                <Globe className="h-4 w-4" />
+              </div>
+              <div>
+                <span className="block text-sm font-semibold text-slate-100">
+                  {isEn ? 'App Language' : 'Jazyk aplikace'}
+                </span>
+                <span className="mt-0.5 block text-xs text-slate-400">
+                  {isEn
+                    ? 'Applies to UI, AI reasoning, currency/number formatting, and notifications.'
+                    : 'Přepíná celé rozhraní, AI rozbory, formátování čísel i oznámení.'}
+                </span>
+              </div>
+            </div>
+
+            <div
+              role="radiogroup"
+              aria-label={isEn ? 'App Language' : 'Jazyk aplikace'}
+              className="grid grid-cols-2 gap-1.5 rounded-xl border border-slate-800 bg-[#090D16] p-1 shrink-0"
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={language === 'cs'}
+                onClick={() => setLanguage('cs')}
+                className={`min-h-[38px] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  language === 'cs'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                Čeština (CZ)
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={language === 'en'}
+                onClick={() => setLanguage('en')}
+                className={`min-h-[38px] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  language === 'en'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                English (EN)
+              </button>
             </div>
           </div>
 
           {/* Demo Mode Toggle */}
           <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-800/80 bg-[#0B101B] p-4">
             <div>
-              <span className="block text-sm font-semibold text-slate-100">Demo režim</span>
+              <span className="block text-sm font-semibold text-slate-100">
+                {isEn ? 'Demo Mode' : 'Demo režim'}
+              </span>
               <span className="mt-0.5 block text-xs text-slate-400">
-                Použít realistická ukázková data pro Premier League, Ligu mistrů, Chance Ligu, NHL, Extraligu, ATP/WTA a UFC/Oktagon.
+                {isEn
+                  ? 'Use realistic sample data for Premier League, Champions League, Czech league, NHL, Extraliga, ATP/WTA & UFC.'
+                  : 'Použít realistická ukázková data pro Premier League, Ligu mistrů, Chance Ligu, NHL, Extraligu, ATP/WTA a UFC/Oktagon.'}
               </span>
             </div>
             <button
@@ -223,10 +288,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
                 <div>
                   <span className="block text-sm font-semibold text-slate-100">
-                    Oznámení (začátek zápasu a výhry)
+                    {isEn
+                      ? 'Notifications (match start & wins)'
+                      : 'Oznámení (začátek zápasu a výhry)'}
                   </span>
                   <span className="mt-0.5 block text-xs text-slate-400">
-                    Systémové upozornění pouze pro uložené aktivní tikety a výhry (při prohře úplné ticho).
+                    {isEn
+                      ? 'Browser alerts only for saved active tickets and wins (completely silent on loss).'
+                      : 'Systémové upozornění pouze pro uložené aktivní tikety a výhry (při prohře úplné ticho).'}
                   </span>
                 </div>
               </div>
@@ -235,7 +304,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="button"
                 role="switch"
                 aria-checked={notificationsEnabled && permissionState === 'granted'}
-                aria-label="Oznámení (začátek zápasu a výhry)"
+                aria-label={
+                  isEn
+                    ? 'Notifications (match start & wins)'
+                    : 'Oznámení (začátek zápasu a výhry)'
+                }
                 onClick={() => void handleToggleNotifications()}
                 className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors ${
                   notificationsEnabled && permissionState === 'granted'
@@ -254,16 +327,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3">
-              <span className="text-xs font-medium text-slate-300">Kdy upozornit před zápasem:</span>
+              <span className="text-xs font-medium text-slate-300">
+                {isEn ? 'Notify before kickoff:' : 'Kdy upozornit před zápasem:'}
+              </span>
               <div
                 role="radiogroup"
-                aria-label="Čas upozornění před začátkem"
+                aria-label={
+                  isEn ? 'Lead time before kickoff' : 'Čas upozornění před začátkem'
+                }
                 className="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1"
               >
                 {(
                   [
-                    { value: 15, label: '15 min předem' },
-                    { value: 0, label: 'Přesně při začátku' },
+                    { value: 15, label: isEn ? '15 min before' : '15 min předem' },
+                    { value: 0, label: isEn ? 'At kickoff' : 'Přesně při začátku' },
                   ] as const
                 ).map((opt) => {
                   const selected = notificationLeadMinutes === opt.value;
@@ -289,12 +366,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             {permissionState === 'denied' && (
               <p className="text-xs text-rose-300">
-                Oprávnění k oznámením je v prohlížeči zablokováno. Povolte notifikace v nastavení stránky.
+                {isEn
+                  ? 'Notifications are blocked in your browser. Please enable them in site permissions.'
+                  : 'Oprávnění k oznámením je v prohlížeči zablokováno. Povolte notifikace v nastavení stránky.'}
               </p>
             )}
             {permissionState === 'unsupported' && (
               <p className="text-xs text-amber-300">
-                Tento prohlížeč nebo prostředí nepodporuje Web Notifications API.
+                {isEn
+                  ? 'This browser or environment does not support the Web Notifications API.'
+                  : 'Tento prohlížeč nebo prostředí nepodporuje Web Notifications API.'}
               </p>
             )}
           </div>
@@ -303,18 +384,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label htmlFor="odds-api-key" className="block text-sm font-semibold text-slate-100">
-                The Odds API klíč (aktuální kurzy)
+                {isEn ? 'The Odds API Key (live odds)' : 'The Odds API klíč (aktuální kurzy)'}
               </label>
               <span
                 className={`inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold tabular-nums ${quotaTone}`}
               >
                 {remainingQuota !== null
-                  ? `Zbývá kreditů: ${remainingQuota}`
+                  ? isEn
+                    ? `Credits left: ${remainingQuota}`
+                    : `Zbývá kreditů: ${remainingQuota}`
+                  : isEn
+                  ? 'Credits left: —'
                   : 'Zbývá kreditů: —'}
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              Stahuje výhradně hlavní soutěže dostupné na Betanu (regions=eu, trh h2h, max. 5 kreditů na ruční aktualizaci). Mezipaměť platí 60 minut.
+              {isEn
+                ? 'Fetches major Betano competitions only (regions=eu, h2h market, max 5 credits per manual refresh). Cached for 60 minutes.'
+                : 'Stahuje výhradně hlavní soutěže dostupné na Betanu (regions=eu, trh h2h, max. 5 kreditů na ruční aktualizaci). Mezipaměť platí 60 minut.'}
             </p>
             <input
               id="odds-api-key"
@@ -322,7 +409,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               autoComplete="off"
               value={oddsKey}
               onChange={(e) => setOddsKey(e.target.value)}
-              placeholder="Zadejte váš The Odds API klíč..."
+              placeholder={
+                isEn ? 'Enter your The Odds API key...' : 'Zadejte váš The Odds API klíč...'
+              }
               className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
@@ -330,10 +419,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* API-Sports Key */}
           <div>
             <label htmlFor="apisports-key" className="block text-sm font-semibold text-slate-100">
-              API-Sports klíč (volitelné statistiky forem & H2H)
+              {isEn
+                ? 'API-Sports Key (optional form & H2H stats)'
+                : 'API-Sports klíč (volitelné statistiky forem & H2H)'}
             </label>
             <p className="mt-0.5 text-xs text-slate-400">
-              Obohacuje fotbalové a hokejové zápasy o skutečnou bilanci posledních 5 utkání.
+              {isEn
+                ? 'Enriches football and hockey matches with real last-5 results.'
+                : 'Obohacuje fotbalové a hokejové zápasy o skutečnou bilanci posledních 5 utkání.'}
             </p>
             <input
               id="apisports-key"
@@ -341,7 +434,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               autoComplete="off"
               value={sportsKey}
               onChange={(e) => setSportsKey(e.target.value)}
-              placeholder="Volitelný x-apisports-key..."
+              placeholder={isEn ? 'Optional x-apisports-key...' : 'Volitelný x-apisports-key...'}
               className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
@@ -350,7 +443,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label htmlFor="gemini-api-key" className="block text-sm font-semibold text-slate-100">
-                Gemini API klíč (volitelné AI zdůvodnění tiketů)
+                {isEn
+                  ? 'Gemini API Key (optional AI match reasoning)'
+                  : 'Gemini API klíč (volitelné AI zdůvodnění tiketů)'}
               </label>
               <span
                 className={`inline-flex items-center rounded-lg border px-2.5 py-0.5 font-mono text-xs font-semibold ${
@@ -359,11 +454,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     : 'border-slate-700 bg-[#090D16] text-slate-400'
                 }`}
               >
-                {geminiKey.trim() ? 'Aktivní (Gemini 3.8 Flash)' : 'Volitelné (vypnuto)'}
+                {geminiKey.trim()
+                  ? isEn
+                    ? 'Active (Gemini 3.8 Flash)'
+                    : 'Aktivní (Gemini 3.8 Flash)'
+                  : isEn
+                  ? 'Optional (disabled)'
+                  : 'Volitelné (vypnuto)'}
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              Pokud zadáte vlastní klíč z Google AI Studio, zobrazí se u zápasů na tiketu tlačítko „Zobrazit AI analýzu“ (Gemini 3.8 Flash). Bez klíče se zobrazí čistý statistický přehled.
+              {isEn
+                ? 'Enter a Google AI Studio key to unlock "Show AI Analysis" (Gemini 3.8 Flash) on matches and ticket legs. Without a key, a pure statistical breakdown is shown.'
+                : 'Pokud zadáte vlastní klíč z Google AI Studio, zobrazí se u zápasů na tiketu tlačítko „Zobrazit AI analýzu“ (Gemini 3.8 Flash). Bez klíče se zobrazí čistý statistický přehled.'}
             </p>
             <input
               id="gemini-api-key"
@@ -371,7 +474,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               autoComplete="off"
               value={geminiKey}
               onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="Volitelný Gemini API klíč (AIza...)..."
+              placeholder={
+                isEn
+                  ? 'Optional Gemini API key (AIza...)...'
+                  : 'Volitelný Gemini API klíč (AIza...)...'
+              }
               className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-800 bg-[#090D16] px-4 font-mono text-sm text-slate-100 placeholder:font-sans placeholder:text-slate-500 focus:border-emerald-500/60 focus:outline-none"
             />
           </div>
@@ -379,7 +486,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {/* Initial Bankroll */}
           <div>
             <label htmlFor="initial-bankroll" className="block text-sm font-semibold text-slate-100">
-              Počáteční kapitál / Bankroll (Kč)
+              {isEn ? 'Initial Capital / Bankroll (CZK)' : 'Počáteční kapitál / Bankroll (Kč)'}
             </label>
             <input
               id="initial-bankroll"
@@ -398,7 +505,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <Clock className="h-3.5 w-3.5 text-emerald-400" />
                 <span className="font-mono tabular-nums">{lastUpdateLabel}</span>
               </span>
-              <span className="text-[11px] text-slate-400">Cache 60 min (0 kreditů při obnovení)</span>
+              <span className="text-[11px] text-slate-400">
+                {isEn ? 'Cache 60 min (0 credits on reload)' : 'Cache 60 min (0 kreditů při obnovení)'}
+              </span>
             </div>
           )}
 
@@ -422,12 +531,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {savedNotice ? (
                 <>
                   <Check className="h-4 w-4" />
-                  <span>Nastavení uloženo</span>
+                  <span>{isEn ? 'Settings Saved' : 'Nastavení uloženo'}</span>
                 </>
               ) : (
                 <>
                   <Database className="h-4 w-4" />
-                  <span>Uložit nastavení</span>
+                  <span>{isEn ? 'Save Settings' : 'Uložit nastavení'}</span>
                 </>
               )}
             </button>
@@ -439,7 +548,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               className="inline-flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-100 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
             >
               <RefreshCw className={`h-4 w-4 text-emerald-400 ${isLoadingLive ? 'animate-spin' : ''}`} />
-              <span>{isLoadingLive ? 'Stahuji kurzy...' : 'Aktualizovat kurzy z API'}</span>
+              <span>
+                {isLoadingLive
+                  ? isEn
+                    ? 'Fetching odds...'
+                    : 'Stahuji kurzy...'
+                  : isEn
+                  ? 'Fetch Live Odds'
+                  : 'Aktualizovat kurzy z API'}
+              </span>
             </button>
           </div>
         </form>
@@ -453,18 +570,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
               <div>
                 <h2 className="font-display text-base font-bold text-slate-100">
-                  Android aplikace (APK & PWA)
+                  {isEn ? 'Android App (APK & PWA)' : 'Android aplikace (APK & PWA)'}
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Připraveno pro Android Studio (Capacitor) i přímou instalaci v Chromu
+                  {isEn
+                    ? 'Ready for Android Studio (Capacitor) and direct Chrome install'
+                    : 'Připraveno pro Android Studio (Capacitor) i přímou instalaci v Chromu'}
                 </p>
               </div>
             </div>
 
             <p className="mt-4 text-xs leading-relaxed text-slate-300">
-              Projekt obsahuje nativní Android obal <span className="font-mono text-slate-200">cz.betedge.ai</span> ve složce{' '}
-              <span className="font-mono text-slate-200">android/</span> pro sestavení souboru <span className="font-mono text-slate-200">.apk</span> /{' '}
-              <span className="font-mono text-slate-200">.aab</span> v Android Studiu, a zároveň podporuje okamžitou instalaci jako WebAPK přímo v mobilním prohlížeči Chrome.
+              {isEn ? (
+                <>
+                  The project includes a native Android wrapper{' '}
+                  <span className="font-mono text-slate-200">cz.betedge.ai</span> in{' '}
+                  <span className="font-mono text-slate-200">android/</span> for building{' '}
+                  <span className="font-mono text-slate-200">.apk</span> /{' '}
+                  <span className="font-mono text-slate-200">.aab</span> bundles in Android Studio,
+                  and supports instant WebAPK installation directly in mobile Chrome.
+                </>
+              ) : (
+                <>
+                  Projekt obsahuje nativní Android obal{' '}
+                  <span className="font-mono text-slate-200">cz.betedge.ai</span> ve složce{' '}
+                  <span className="font-mono text-slate-200">android/</span> pro sestavení souboru{' '}
+                  <span className="font-mono text-slate-200">.apk</span> /{' '}
+                  <span className="font-mono text-slate-200">.aab</span> v Android Studiu, a zároveň
+                  podporuje okamžitou instalaci jako WebAPK přímo v mobilním prohlížeči Chrome.
+                </>
+              )}
             </p>
 
             <div className="mt-4">
@@ -479,13 +614,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
               <div>
                 <h2 className="font-display text-base font-bold text-slate-100">
-                  Analytický nástroj, ne automat
+                  {isEn ? 'Analytical Tool, Not Auto-Betting' : 'Analytický nástroj, ne automat'}
                 </h2>
-                <p className="text-xs text-slate-400">Zodpovědný přístup ke sportovní analýze</p>
+                <p className="text-xs text-slate-400">
+                  {isEn
+                    ? 'Responsible approach to sports analytics'
+                    : 'Zodpovědný přístup ke sportovní analýze'}
+                </p>
               </div>
             </div>
             <p className="mt-3 text-xs leading-relaxed text-slate-400">
-              BetEdge AI slouží výhradně k matematickému vyhodnocení pravděpodobností, porovnání kurzů a správě vlastního bankrollu. Žádné sázky nejsou podávány automaticky — vybraný tiket si vždy ručně zkontrolujete a vsadíte na Betano nebo Tipsport.
+              {isEn
+                ? 'BetEdge AI is designed strictly for mathematical probability evaluation, odds comparison, and bankroll tracking. No bets are placed automatically — you always review and place your ticket manually on Betano or Tipsport.'
+                : 'BetEdge AI slouží výhradně k matematickému vyhodnocení pravděpodobností, porovnání kurzů a správě vlastního bankrollu. Žádné sázky nejsou podávány automaticky — vybraný tiket si vždy ručně zkontrolujete a vsadíte na Betano nebo Tipsport.'}
             </p>
           </section>
         </div>

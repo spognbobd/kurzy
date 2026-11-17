@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEMO_MATCHES, INITIAL_DEMO_TICKETS } from './data/demoMatches';
 import { useLocalStorage } from './hooks/useLocalStorage';
+import { useLanguage } from './i18n/LanguageContext';
 import { fetchLiveOddsAndStats } from './services/oddsApiService';
 import { AppSettings, MatchAnalysis, NotificationLeadMinutes, Ticket, TicketStatus } from './types/betting';
 import { copyMatchForBetano, formatCZK } from './utils/analyticsEngine';
@@ -44,6 +45,9 @@ function getKeyFingerprint(apiKey: string): string {
 }
 
 export default function App() {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+
   const [activeTab, setActiveTab] = useState<AppTab>('matches');
   const [settings, setSettings] = useLocalStorage<AppSettings>('betedge_settings_v1', DEFAULT_SETTINGS);
   const [tickets, setTickets] = useLocalStorage<Ticket[]>('betedge_tickets_v1', INITIAL_DEMO_TICKETS);
@@ -92,9 +96,13 @@ export default function App() {
   const handleOpenBetano = useCallback(
     (homeTeam: string, awayTeam: string, recommendedPick?: string) => {
       const copiedName = copyMatchForBetano(homeTeam, awayTeam, recommendedPick);
-      showToast(`Zkopírováno „${copiedName}“, vlož v Betanu do vyhledávání`);
+      showToast(
+        isEn
+          ? `Copied "${copiedName}" — paste it into Betano search`
+          : `Zkopírováno „${copiedName}“, vlož v Betanu do vyhledávání`
+      );
     },
-    [showToast]
+    [showToast, isEn]
   );
 
   const handleFetchLiveData = useCallback(
@@ -106,7 +114,11 @@ export default function App() {
       if (!trimmedOdds) {
         setLiveMatches(null);
         setLiveStatusMessage(null);
-        setLiveError('Chybí API klíč pro The Odds API. Zadejte klíč v Nastavení nebo zapněte Demo režim.');
+        setLiveError(
+          isEn
+            ? 'Missing The Odds API key. Enter your key in Settings or enable Demo Mode.'
+            : 'Chybí API klíč pro The Odds API. Zadejte klíč v Nastavení nebo zapněte Demo režim.'
+        );
         return;
       }
 
@@ -123,9 +135,15 @@ export default function App() {
       if (isCacheFresh) {
         setLiveMatches(cached.matches);
         setLiveError(null);
-        const quotaNote = cached.remainingQuota ? ` · zbývá ${cached.remainingQuota} kreditů` : '';
+        const quotaNote = cached.remainingQuota
+          ? isEn
+            ? ` · ${cached.remainingQuota} credits left`
+            : ` · zbývá ${cached.remainingQuota} kreditů`
+          : '';
         setLiveStatusMessage(
-          `Načteno z mezipaměti (${cached.matches.length} zápasů · 0 kreditů)${quotaNote}.`
+          isEn
+            ? `Loaded from cache (${cached.matches.length} matches · 0 credits)${quotaNote}.`
+            : `Načteno z mezipaměti (${cached.matches.length} zápasů · 0 kreditů)${quotaNote}.`
         );
         return;
       }
@@ -134,7 +152,7 @@ export default function App() {
       setLiveError(null);
       setLiveStatusMessage(null);
       try {
-        const result = await fetchLiveOddsAndStats(trimmedOdds, trimmedSports);
+        const result = await fetchLiveOddsAndStats(trimmedOdds, trimmedSports, language);
         const now = Date.now();
         setLiveMatches(result.matches);
         setOddsCache({
@@ -143,23 +161,37 @@ export default function App() {
           remainingQuota: result.remainingQuota ?? cached?.remainingQuota ?? null,
           keyFingerprint: fp,
         });
-        const quotaNote = result.remainingQuota ? ` · zbývá ${result.remainingQuota} kreditů` : '';
+        const quotaNote = result.remainingQuota
+          ? isEn
+            ? ` · ${result.remainingQuota} credits left`
+            : ` · zbývá ${result.remainingQuota} kreditů`
+          : '';
         setLiveStatusMessage(
-          `Načteno ${result.matches.length} aktuálních zápasů z The Odds API${quotaNote}.`
+          isEn
+            ? `Loaded ${result.matches.length} upcoming matches from The Odds API${quotaNote}.`
+            : `Načteno ${result.matches.length} aktuálních zápasů z The Odds API${quotaNote}.`
         );
         if (result.apiSportsWarning) {
-          setLiveError(`Poznámka z API-Sports: ${result.apiSportsWarning}`);
+          setLiveError(
+            isEn
+              ? `API-Sports notice: ${result.apiSportsWarning}`
+              : `Poznámka z API-Sports: ${result.apiSportsWarning}`
+          );
         }
       } catch (err) {
         const message =
-          err instanceof Error ? err.message : 'Nepodařilo se stáhnout kurzy z The Odds API.';
+          err instanceof Error
+            ? err.message
+            : isEn
+            ? 'Failed to fetch odds from The Odds API.'
+            : 'Nepodařilo se stáhnout kurzy z The Odds API.';
         setLiveMatches(cached?.keyFingerprint === fp ? cached.matches : null);
         setLiveError(message);
       } finally {
         setIsLoadingLive(false);
       }
     },
-    [setOddsCache]
+    [setOddsCache, isEn, language]
   );
 
   useEffect(() => {
@@ -199,7 +231,11 @@ export default function App() {
             notificationsEnabled: false,
             notificationLeadMinutes: leadMinutes,
           }));
-          showToast('Tento prohlížeč nepodporuje systémová oznámení.');
+          showToast(
+            isEn
+              ? 'This browser does not support system notifications.'
+              : 'Tento prohlížeč nepodporuje systémová oznámení.'
+          );
           return;
         }
         if (perm === 'denied') {
@@ -208,7 +244,11 @@ export default function App() {
             notificationsEnabled: false,
             notificationLeadMinutes: leadMinutes,
           }));
-          showToast('Oznámení jsou v prohlížeči zakázána. Povolte je v nastavení stránky.');
+          showToast(
+            isEn
+              ? 'Notifications are blocked in your browser. Allow them in site settings.'
+              : 'Oznámení jsou v prohlížeči zakázána. Povolte je v nastavení stránky.'
+          );
           return;
         }
         setSettings((prev) => ({
@@ -218,7 +258,11 @@ export default function App() {
         }));
         if (perm === 'granted') {
           showToast(
-            leadMinutes === 15
+            isEn
+              ? leadMinutes === 15
+                ? 'Notifications enabled (15 min before kickoff & wins).'
+                : 'Notifications enabled (at kickoff & wins).'
+              : leadMinutes === 15
               ? 'Oznámení zapnuta (15 min před začátkem a výhry).'
               : 'Oznámení zapnuta (přesně při začátku a výhry).'
           );
@@ -232,14 +276,14 @@ export default function App() {
         notificationLeadMinutes: leadMinutes,
       }));
     },
-    [setSettings, showToast]
+    [setSettings, showToast, isEn]
   );
 
   useEffect(() => {
     if (!settings.notificationsEnabled) return;
-    checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+    checkAndSendMatchStartNotifications(tickets, settings, activeMatches, Date.now(), language);
     const intervalId = window.setInterval(() => {
-      checkAndSendMatchStartNotifications(tickets, settings, activeMatches);
+      checkAndSendMatchStartNotifications(tickets, settings, activeMatches, Date.now(), language);
     }, 15000);
     return () => window.clearInterval(intervalId);
   }, [
@@ -248,6 +292,7 @@ export default function App() {
     settings.notificationsEnabled,
     settings.notificationLeadMinutes,
     settings,
+    language,
   ]);
 
   useEffect(() => {
@@ -257,7 +302,7 @@ export default function App() {
         const prevStatus = prevMap.get(ticket.id);
         if (prevStatus === 'pending' && ticket.status === 'won') {
           triggerWinHighlight(ticket.id);
-          notifyTicketWinIfEligible(ticket, settings);
+          notifyTicketWinIfEligible(ticket, settings, language);
         }
       }
     }
@@ -266,21 +311,29 @@ export default function App() {
       nextMap.set(t.id, t.status);
     }
     prevTicketStatusesRef.current = nextMap;
-  }, [tickets, settings, triggerWinHighlight]);
+  }, [tickets, settings, triggerWinHighlight, language]);
 
   const handleToggleMatchOnSlip = (match: MatchAnalysis) => {
     setSlipMatchIds((prev) => {
       if (prev.includes(match.id)) {
         return prev.filter((id) => id !== match.id);
       }
-      showToast(`Zápas ${match.homeTeam} vs. ${match.awayTeam} přidán na tiket.`);
+      showToast(
+        isEn
+          ? `${match.homeTeam} vs. ${match.awayTeam} added to slip.`
+          : `Zápas ${match.homeTeam} vs. ${match.awayTeam} přidán na tiket.`
+      );
       return [...prev, match.id];
     });
   };
 
   const handleSaveTicket = (ticket: Ticket) => {
     setTickets((prev) => [ticket, ...prev]);
-    showToast('Tiket byl uložen do Bankrollu a statistik.');
+    showToast(
+      isEn
+        ? 'Ticket saved to Bankroll & Stats.'
+        : 'Tiket byl uložen do Bankrollu a statistik.'
+    );
   };
 
   const handleSettleTicket = (ticketId: string, status: 'won' | 'lost') => {
@@ -297,9 +350,15 @@ export default function App() {
       const netProfit = targetTicket.potentialWin - targetTicket.actualStake;
       if (netProfit > 0) {
         showToast(
-          `🏆 Výherní tiket! Vyhrál jsi +${formatCZK(targetTicket.potentialWin)} (čistý zisk +${formatCZK(
-            netProfit
-          )})`
+          isEn
+            ? `🏆 Winning Ticket! You won +${formatCZK(
+                targetTicket.potentialWin,
+                'en'
+              )} (net profit +${formatCZK(netProfit, 'en')})`
+            : `🏆 Výherní tiket! Vyhrál jsi +${formatCZK(
+                targetTicket.potentialWin,
+                'cs'
+              )} (čistý zisk +${formatCZK(netProfit, 'cs')})`
         );
       }
     }
@@ -311,23 +370,35 @@ export default function App() {
 
   const handleResetDemoHistory = () => {
     setTickets(INITIAL_DEMO_TICKETS);
-    showToast('Ukázková historie bankrollu byla obnovena.');
+    showToast(
+      isEn
+        ? 'Demo bankroll history restored.'
+        : 'Ukázková historie bankrollu byla obnovena.'
+    );
   };
 
   const handleStartFromScratch = () => {
     setTickets([]);
-    showToast(`Demo tikety smazány. Počáteční kapitál je ${formatCZK(settings.initialBankroll)}.`);
+    showToast(
+      isEn
+        ? `Demo tickets cleared. Initial capital is ${formatCZK(settings.initialBankroll, 'en')}.`
+        : `Demo tikety smazány. Počáteční kapitál je ${formatCZK(settings.initialBankroll, 'cs')}.`
+    );
   };
 
   const handleAddCustomMatch = (match: MatchAnalysis) => {
     setCustomMatches((prev) => [match, ...prev]);
-    showToast(`Vlastní zápas ${match.homeTeam} vs. ${match.awayTeam} byl přidán.`);
+    showToast(
+      isEn
+        ? `Custom match ${match.homeTeam} vs. ${match.awayTeam} added.`
+        : `Vlastní zápas ${match.homeTeam} vs. ${match.awayTeam} byl přidán.`
+    );
   };
 
   const handleDeleteCustomMatch = (matchId: string) => {
     setCustomMatches((prev) => prev.filter((m) => m.id !== matchId));
     setSlipMatchIds((prev) => prev.filter((id) => id !== matchId));
-    showToast('Vlastní zápas byl odstraněn.');
+    showToast(isEn ? 'Custom match removed.' : 'Vlastní zápas byl odstraněn.');
   };
 
   return (
@@ -409,8 +480,16 @@ export default function App() {
 
       <footer className="hidden border-t border-slate-800/70 bg-[#090D16] py-5 md:block">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 text-xs text-slate-500">
-          <span>BetEdge AI · Sportovní analytik a správa bankrollu</span>
-          <span>Analytická platforma bez automatického podávání sázek · Hrajte zodpovědně (18+)</span>
+          <span>
+            {isEn
+              ? 'BetEdge AI · Sports Value Analytics & Bankroll Management'
+              : 'BetEdge AI · Sportovní analytik a správa bankrollu'}
+          </span>
+          <span>
+            {isEn
+              ? 'Analytical platform without automated betting · Gamble responsibly (18+)'
+              : 'Analytická platforma bez automatického podávání sázek · Hrajte zodpovědně (18+)'}
+          </span>
         </div>
       </footer>
 

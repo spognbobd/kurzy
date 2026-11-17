@@ -1,3 +1,4 @@
+import { AppLanguage } from '../i18n/LanguageContext';
 import { FormResult, MatchAnalysis, SportCategory, TimeWindow } from '../types/betting';
 import { evaluateMatchModel } from '../utils/analyticsEngine';
 
@@ -391,11 +392,14 @@ export interface LiveFetchResult {
 
 export async function fetchLiveOddsAndStats(
   theOddsApiKey: string,
-  apiSportsKey: string
+  apiSportsKey: string,
+  language: AppLanguage = 'cs'
 ): Promise<LiveFetchResult> {
   const key = theOddsApiKey.trim();
   if (!key) {
-    throw new Error('Chybí API klíč pro The Odds API.');
+    throw new Error(
+      language === 'en' ? 'Missing The Odds API key.' : 'Chybí API klíč pro The Odds API.'
+    );
   }
 
   // 1. Free discovery call (0 quota credits) to find all currently active competitions
@@ -412,13 +416,19 @@ export async function fetchLiveOddsAndStats(
   let remainingQuota: string | null = sportsRes.headers.get('x-requests-remaining');
   const allSports = (await sportsRes.json()) as OddsApiSport[];
   if (!Array.isArray(allSports)) {
-    throw new Error('The Odds API vrátilo neplatný seznam aktivních sportů.');
+    throw new Error(
+      language === 'en'
+        ? 'The Odds API returned an invalid list of active sports.'
+        : 'The Odds API vrátilo neplatný seznam aktivních sportů.'
+    );
   }
 
   const { selected: activeCompetitions, categoryByKey } = selectActiveCompetitions(allSports);
   if (activeCompetitions.length === 0) {
     throw new Error(
-      'V The Odds API momentálně nejsou aktivní žádné hlavní soutěže pro Betano (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga mistrů, české ligy, NHL, NBA, ATP/WTA, UFC).'
+      language === 'en'
+        ? 'No major Betano competitions are currently active in The Odds API (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Champions League, Czech leagues, NHL, NBA, ATP/WTA, UFC).'
+        : 'V The Odds API momentálně nejsou aktivní žádné hlavní soutěže pro Betano (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga mistrů, české ligy, NHL, NBA, ATP/WTA, UFC).'
     );
   }
 
@@ -437,7 +447,9 @@ export async function fetchLiveOddsAndStats(
   for (const res of responses) {
     if (res.status === 'rejected') {
       httpErrors.push(
-        `Síťová chyba The Odds API: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`
+        language === 'en'
+          ? `The Odds API network error: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`
+          : `Síťová chyba The Odds API: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`
       );
       continue;
     }
@@ -487,7 +499,11 @@ export async function fetchLiveOddsAndStats(
     if (httpErrors.length > 0) {
       throw new Error(httpErrors[0]);
     }
-    throw new Error('The Odds API vrátilo aktivní soutěže, ale momentálně žádné zápasy s vypsanými kurzy.');
+    throw new Error(
+      language === 'en'
+        ? 'The Odds API returned active competitions, but no matches with posted odds right now.'
+        : 'The Odds API vrátilo aktivní soutěže, ale momentálně žádné zápasy s vypsanými kurzy.'
+    );
   }
 
   const analyzed: MatchAnalysis[] = [];

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Share, X } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { useLanguage } from '../i18n/LanguageContext';
 
 interface PWAInstallButtonProps {
   variant?: 'compact' | 'full';
@@ -9,11 +10,15 @@ interface PWAInstallButtonProps {
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'compact' }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
+  const { language } = useLanguage();
+  const isEn = language === 'en';
 
   if (isInstalled) {
     return variant === 'full' ? (
       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
-        Aplikace BetEdge AI je již nainstalována jako samostatná aplikace.
+        {isEn
+          ? 'BetEdge AI is already installed as a standalone app.'
+          : 'Aplikace BetEdge AI je již nainstalována jako samostatná aplikace.'}
       </div>
     ) : null;
   }
@@ -28,7 +33,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
         }`}
       >
         <Download className="h-4 w-4 shrink-0" />
-        <span>Nainstalovat aplikaci (PWA)</span>
+        <span>{isEn ? 'Install App (PWA)' : 'Nainstalovat aplikaci (PWA)'}</span>
       </button>
     );
   }
@@ -44,7 +49,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
           }`}
         >
           <Share className="h-4 w-4 shrink-0 text-emerald-400" />
-          <span>Přidat na plochu (iOS)</span>
+          <span>{isEn ? 'Add to Home Screen (iOS)' : 'Přidat na plochu (iOS)'}</span>
         </button>
 
         {showIOSGuide && (
@@ -57,28 +62,36 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
             <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-[#111827] p-6 shadow-2xl">
               <div className="flex items-start justify-between gap-4">
                 <h3 id="ios-install-title" className="text-lg font-bold text-slate-100">
-                  Instalace na iPhone / iPad
+                  {isEn ? 'Install on iPhone / iPad' : 'Instalace na iPhone / iPad'}
                 </h3>
                 <button
                   type="button"
                   onClick={() => setShowIOSGuide(false)}
                   className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-                  aria-label="Zavřít návod"
+                  aria-label={isEn ? 'Close guide' : 'Zavřít návod'}
                 >
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <ol className="mt-4 space-y-3 text-sm text-slate-300">
-                <li>1. Klepněte na ikonu <strong>Sdílet</strong> ve spodní liště Safari.</li>
-                <li>2. Posuňte nabídku níže a vyberte <strong>Přidat na plochu</strong>.</li>
-                <li>3. Potvrďte tlačítkem <strong>Přidat</strong> v pravém horním rohu.</li>
-              </ol>
+              {isEn ? (
+                <ol className="mt-4 space-y-3 text-sm text-slate-300">
+                  <li>1. Tap the <strong>Share</strong> icon in Safari&apos;s bottom bar.</li>
+                  <li>2. Scroll down and select <strong>Add to Home Screen</strong>.</li>
+                  <li>3. Confirm by tapping <strong>Add</strong> in the top right corner.</li>
+                </ol>
+              ) : (
+                <ol className="mt-4 space-y-3 text-sm text-slate-300">
+                  <li>1. Klepněte na ikonu <strong>Sdílet</strong> ve spodní liště Safari.</li>
+                  <li>2. Posuňte nabídku níže a vyberte <strong>Přidat na plochu</strong>.</li>
+                  <li>3. Potvrďte tlačítkem <strong>Přidat</strong> v pravém horním rohu.</li>
+                </ol>
+              )}
               <button
                 type="button"
                 onClick={() => setShowIOSGuide(false)}
                 className="mt-6 min-h-[44px] w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
               >
-                Rozumím
+                {isEn ? 'Got it' : 'Rozumím'}
               </button>
             </div>
           </div>
@@ -90,9 +103,19 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
   if (variant === 'full') {
     return (
       <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-relaxed text-slate-400">
-        V mobilním prohlížeči Chrome otevřete menu prohlížeče (tři tečky) a zvolte{' '}
-        <span className="font-semibold text-slate-200">Přidat na plochu</span> nebo{' '}
-        <span className="font-semibold text-slate-200">Nainstalovat aplikaci</span>.
+        {isEn ? (
+          <>
+            In mobile Chrome, open the browser menu (three dots) and choose{' '}
+            <span className="font-semibold text-slate-200">Add to Home Screen</span> or{' '}
+            <span className="font-semibold text-slate-200">Install App</span>.
+          </>
+        ) : (
+          <>
+            V mobilním prohlížeči Chrome otevřete menu prohlížeče (tři tečky) a zvolte{' '}
+            <span className="font-semibold text-slate-200">Přidat na plochu</span> nebo{' '}
+            <span className="font-semibold text-slate-200">Nainstalovat aplikaci</span>.
+          </>
+        )}
       </div>
     );
   }

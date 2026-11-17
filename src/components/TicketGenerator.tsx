@@ -17,6 +17,15 @@ import {
   Trash2,
   TrendingUp,
 } from 'lucide-react';
+import { AppLanguage, useLanguage } from '../i18n/LanguageContext';
+import {
+  formatMatchCountLabel,
+  localizeKickoffTime,
+  translateEstimatedRisk,
+  translateRecommendedPick,
+  translateSport,
+  translateTimeWindow,
+} from '../i18n/translations';
 import {
   EstimatedRiskBadge,
   MatchAnalysis,
@@ -39,8 +48,10 @@ import {
 } from '../utils/analyticsEngine';
 import {
   fetchSingleMatchReasoning,
+  getCachedReasonForLang,
   loadCachedMatchReasons,
   saveCachedMatchReasons,
+  setCachedReasonForLang,
 } from '../services/geminiReasoningService';
 
 interface TicketGeneratorProps {
@@ -76,40 +87,6 @@ type DayFilter = TimeWindow | 'Vše';
 
 const DAY_FILTER_OPTIONS: DayFilter[] = ['Vše', 'Dnes', 'Zítra', 'Víkend'];
 
-const TICKET_MODES: {
-  id: TicketStyle;
-  shortTitle: string;
-  title: string;
-  summary: string;
-  riskLabel: RiskLevel;
-  icon: typeof ShieldCheck;
-}[] = [
-  {
-    id: 'safe',
-    shortTitle: 'Jistota',
-    title: 'Jistota (Konzervativní)',
-    summary: '1–2 nejbezpečnější zápasy · doporučený vklad cca 10 % (min. 10 Kč)',
-    riskLabel: 'Konzervativní',
-    icon: ShieldCheck,
-  },
-  {
-    id: 'smart_value',
-    shortTitle: 'Vyvážený',
-    title: 'Vyvážený (Smart Value)',
-    summary: '2–3 zápasy s dobrou šancí a +EV · vklad cca 7 % (min. 10 Kč)',
-    riskLabel: 'Vyvážený',
-    icon: TrendingUp,
-  },
-  {
-    id: 'bold',
-    shortTitle: 'Odvážný',
-    title: 'Odvážný (Vyšší kurz)',
-    summary: '3–4 zápasy s nejvyšším kurzem a Value % · vklad cca 5 % (min. 5 Kč)',
-    riskLabel: 'Odvážný',
-    icon: Flame,
-  },
-];
-
 const RISK_TEXT_STYLES: Record<EstimatedRiskBadge, string> = {
   Nízké: 'font-semibold text-emerald-300',
   Střední: 'font-semibold text-amber-300',
@@ -129,7 +106,7 @@ function renderFormattedGeminiReasoning(text: string) {
         const colonIdx = para.indexOf(':');
         const hasKnownPrefix =
           colonIdx > 0 &&
-          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu)/i.test(
+          /^(Aktuální forma|Síla soupeře|Kurzy a trh|Implikovaná vs\. reálná šance|Verdikt k tiketu|Current form|Opponent strength|Odds & Market|Implied vs\. Real Probability|Ticket Verdict)/i.test(
             para.slice(0, colonIdx)
           );
 
@@ -139,7 +116,7 @@ function renderFormattedGeminiReasoning(text: string) {
 
         const label = para.slice(0, colonIdx + 1);
         const body = para.slice(colonIdx + 1).trim();
-        const isVerdict = /^Verdikt k tiketu/i.test(label);
+        const isVerdict = /^(Verdikt k tiketu|Ticket Verdict)/i.test(label);
 
         return (
           <p key={idx}>
@@ -163,6 +140,56 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   onOpenCustomMatchModal,
   onDeleteCustomMatch,
 }) => {
+  const { language } = useLanguage();
+  const isEn = language === 'en';
+
+  const ticketModes: {
+    id: TicketStyle;
+    shortTitle: string;
+    csTitle: string;
+    displayTitle: string;
+    summary: string;
+    riskLabel: RiskLevel;
+    icon: typeof ShieldCheck;
+  }[] = useMemo(
+    () => [
+      {
+        id: 'safe',
+        shortTitle: isEn ? 'Safe' : 'Jistota',
+        csTitle: 'Jistota (Konzervativní)',
+        displayTitle: isEn ? 'Safe (Conservative)' : 'Jistota (Konzervativní)',
+        summary: isEn
+          ? '1–2 safest matches · recommended stake ~10% (min. 10 CZK)'
+          : '1–2 nejbezpečnější zápasy · doporučený vklad cca 10 % (min. 10 Kč)',
+        riskLabel: 'Konzervativní',
+        icon: ShieldCheck,
+      },
+      {
+        id: 'smart_value',
+        shortTitle: isEn ? 'Balanced' : 'Vyvážený',
+        csTitle: 'Vyvážený (Smart Value)',
+        displayTitle: isEn ? 'Balanced (Smart Value)' : 'Vyvážený (Smart Value)',
+        summary: isEn
+          ? '2–3 matches with solid win prob & +EV · stake ~7% (min. 10 CZK)'
+          : '2–3 zápasy s dobrou šancí a +EV · vklad cca 7 % (min. 10 Kč)',
+        riskLabel: 'Vyvážený',
+        icon: TrendingUp,
+      },
+      {
+        id: 'bold',
+        shortTitle: isEn ? 'Bold' : 'Odvážný',
+        csTitle: 'Odvážný (Vyšší kurz)',
+        displayTitle: isEn ? 'Bold (High Odds)' : 'Odvážný (Vyšší kurz)',
+        summary: isEn
+          ? '3–4 matches with highest odds & Value % · stake ~5% (min. 5 CZK)'
+          : '3–4 zápasy s nejvyšším kurzem a Value % · vklad cca 5 % (min. 5 Kč)',
+        riskLabel: 'Odvážný',
+        icon: Flame,
+      },
+    ],
+    [isEn]
+  );
+
   const recommendedMinProb = useMemo(() => {
     const validValueMatches = matches.filter(
       (m) => m.valueScore >= 0 && !isSuspiciousValueMatch(m)
@@ -202,7 +229,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const [aiReasons, setAiReasons] = useState<Record<string, string>>(() => loadCachedMatchReasons());
   const [aiModels, setAiModels] = useState<Record<string, string>>({});
   const [statFallbackReasons, setStatFallbackReasons] = useState<
-    Record<string, { text: string; apiStatus?: string }>
+    Record<string, { text: string; apiStatus?: string; lang: AppLanguage }>
   >({});
   const [expandedMatchIds, setExpandedMatchIds] = useState<Record<string, boolean>>({});
   const [loadingMatchIds, setLoadingMatchIds] = useState<Record<string, boolean>>({});
@@ -248,7 +275,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
   useEffect(() => {
     setStatFallbackReasons({});
-  }, [trimmedGeminiKey]);
+  }, [trimmedGeminiKey, language]);
 
   const dayFilteredMatches = useMemo(() => {
     if (timeWindow === 'Vše') return matches;
@@ -302,7 +329,12 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
   const handleOpenOrFetchAnalysis = async (leg: Ticket['legs'][number]) => {
     if (loadingMatchIds[leg.matchId]) return;
 
-    const cachedText = aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text;
+    const cachedGemini = getCachedReasonForLang(aiReasons, leg.matchId, language);
+    const statCached =
+      statFallbackReasons[leg.matchId]?.lang === language
+        ? statFallbackReasons[leg.matchId]?.text
+        : undefined;
+    const cachedText = cachedGemini ?? statCached;
     if (cachedText) {
       setExpandedMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
       return;
@@ -311,10 +343,10 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setLoadingMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
 
     try {
-      const result = await fetchSingleMatchReasoning(leg, trimmedGeminiKey);
+      const result = await fetchSingleMatchReasoning(leg, trimmedGeminiKey, language);
       if (result.source === 'gemini') {
         setAiReasons((prev) => {
-          const next = { ...prev, [leg.matchId]: result.text };
+          const next = setCachedReasonForLang(prev, leg.matchId, language, result.text);
           saveCachedMatchReasons(next);
           return next;
         });
@@ -324,7 +356,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       } else {
         setStatFallbackReasons((prev) => ({
           ...prev,
-          [leg.matchId]: { text: result.text, apiStatus: result.apiStatus },
+          [leg.matchId]: { text: result.text, apiStatus: result.apiStatus, lang: language },
         }));
       }
       setExpandedMatchIds((prev) => ({ ...prev, [leg.matchId]: true }));
@@ -413,18 +445,22 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     if (!generated) return;
     const stake = parseAmountInput(customStakeInput, generated.recommendedStake, 5);
     setCustomStakeInput(String(stake));
-    const activeMode = TICKET_MODES.find((m) => m.id === generated.style) ?? TICKET_MODES[0];
+    const activeMode = ticketModes.find((m) => m.id === generated.style) ?? ticketModes[0];
     const ticket: Ticket = {
       id: `tkt-${Date.now()}`,
       createdAt: new Date().toISOString(),
-      label: `${activeMode.title} (${generated.legs.length} ${
+      label: `${activeMode.csTitle} (${generated.legs.length} ${
         generated.legs.length === 1 ? 'zápas' : generated.legs.length <= 4 ? 'zápasy' : 'zápasů'
       })`,
       riskLevel: activeMode.riskLabel,
       legs: generated.legs.map((leg) => ({
         ...leg,
         reasoning:
-          aiReasons[leg.matchId] ?? statFallbackReasons[leg.matchId]?.text ?? leg.reasoning,
+          getCachedReasonForLang(aiReasons, leg.matchId, language) ??
+          (statFallbackReasons[leg.matchId]?.lang === language
+            ? statFallbackReasons[leg.matchId]?.text
+            : undefined) ??
+          leg.reasoning,
       })),
       totalOdds: generated.totalOdds,
       totalProbability: generated.totalProbability,
@@ -439,7 +475,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
     setSavedFeedback(true);
   };
 
-  const activeMode = TICKET_MODES.find((m) => m.id === ticketStyle) ?? TICKET_MODES[0];
+  const activeMode = ticketModes.find((m) => m.id === ticketStyle) ?? ticketModes[0];
   const parsedCustomStake = Number(customStakeInput);
   const activeStake =
     customStakeInput === '' || !Number.isFinite(parsedCustomStake)
@@ -456,21 +492,48 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       : 1;
 
   const legsSummaryLabel =
-    exactLegsCount === null
-      ? 'Auto'
-      : exactLegsCount === 1
-      ? '1 zápas'
-      : `${exactLegsCount} zápasy`;
+    exactLegsCount === null ? 'Auto' : formatMatchCountLabel(exactLegsCount, language);
+
+  const localizedGeneratedNote = useMemo(() => {
+    if (!generated) return '';
+    if (!isEn) return generated.note;
+
+    const avgValue =
+      generated.legs.reduce((s, l) => s + l.valueScore, 0) / Math.max(1, generated.legs.length);
+    const valStr = formatPercent(avgValue, true, 'en');
+    const count = generated.legs.length;
+
+    if (generated.style === 'safe') {
+      return `Safe Mode: ${count} safest ${
+        count === 1 ? 'match' : 'matches'
+      } with probability over ${generated.minMatchProbability}%.`;
+    }
+    if (generated.style === 'smart_value') {
+      if (isLowProbCapped) {
+        return `Balanced Mode capped to ${
+          count === 1 ? 'solo (1 match)' : 'double (2 matches)'
+        } due to threshold below 45% (Value ${valStr}).`;
+      }
+      return `Balanced Mode: ${count} ${
+        count === 1 ? 'match' : 'matches'
+      } combining probability over ${generated.minMatchProbability}% and Value ${valStr}.`;
+    }
+    return `Bold Mode: ${count} ${
+      count === 1 ? 'match' : 'matches'
+    } with highest odds and Value ${valStr}.`;
+  }, [generated, isEn, isLowProbCapped]);
 
   return (
     <div className="space-y-4 sm:space-y-5">
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">
-            Generátor tiketu
+            {isEn ? 'Ticket Generator' : 'Generátor tiketu'}
           </h1>
           <p className="mt-0.5 text-xs text-slate-400">
-            Živý automatický přepočet strategie, počtu zápasů a Value filtrů
+            {isEn
+              ? 'Live automatic recalculation of strategy, match count, and Value filters'
+              : 'Živý automatický přepočet strategie, počtu zápasů a Value filtrů'}
           </p>
         </div>
 
@@ -480,7 +543,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
           className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25 whitespace-nowrap shrink-0 self-start sm:self-auto"
         >
           <PlusCircle className="h-4 w-4 shrink-0" />
-          <span>Vlastní zápas</span>
+          <span>{isEn ? 'Custom Match' : 'Vlastní zápas'}</span>
         </button>
       </div>
 
@@ -493,7 +556,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
       >
         {/* Collapsible Unified Strategy + Filters Card */}
         <section
-          aria-label="Nastavení tiketu a filtrů"
+          aria-label={isEn ? 'Ticket & filter settings' : 'Nastavení tiketu a filtrů'}
           className={`rounded-2xl border border-slate-800/90 bg-[#111827] ${
             filtersCollapsed ? 'px-4 py-2.5' : 'space-y-4 p-4 sm:p-5 lg:col-span-5'
           }`}
@@ -507,11 +570,15 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             <div className="flex min-w-0 items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 shrink-0 text-emerald-400" />
               <span className="truncate font-mono text-xs font-semibold tabular-nums text-slate-200">
-                Filtry: {activeMode.shortTitle} · {timeWindow} · {legsSummaryLabel} · Min. {minMatchProbability} %
+                {isEn ? 'Filters:' : 'Filtry:'} {activeMode.shortTitle} ·{' '}
+                {translateTimeWindow(timeWindow, language)} · {legsSummaryLabel} · Min.{' '}
+                {isEn ? `${minMatchProbability}%` : `${minMatchProbability} %`}
               </span>
             </div>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-800 bg-[#090D16] px-2.5 py-1 text-[11px] font-medium text-slate-300">
-              <span>{filtersCollapsed ? 'Rozbalit' : 'Sbalit'}</span>
+              <span>
+                {filtersCollapsed ? (isEn ? 'Expand' : 'Rozbalit') : isEn ? 'Collapse' : 'Sbalit'}
+              </span>
               {filtersCollapsed ? (
                 <ChevronDown className="h-3.5 w-3.5" />
               ) : (
@@ -522,286 +589,321 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
 
           {!filtersCollapsed && (
             <div className="space-y-4 border-t border-slate-800/80 pt-3.5">
-          {/* 1. Compact Horizontal Strategy Switcher */}
-          <div>
-            <span className="block text-xs font-semibold text-slate-300">Strategie tiketu</span>
-            <div
-              role="group"
-              aria-label="Výběr strategie tiketu"
-              className="mt-1.5 grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1"
-            >
-              {TICKET_MODES.map((mode) => {
-                const Icon = mode.icon;
-                const active = ticketStyle === mode.id;
-                return (
-                  <button
-                    key={mode.id}
-                    type="button"
-                    onClick={() => handleSelectStyle(mode.id)}
-                    aria-pressed={active}
-                    className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
-                      active
-                        ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                        : 'text-slate-300 hover:bg-slate-800/60 hover:text-slate-100'
-                    }`}
-                  >
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span>{mode.shortTitle}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-1.5 text-[11px] leading-snug text-slate-400">{activeMode.summary}</p>
-          </div>
-
-          {/* 1B. Compact Day / Time Window Selector */}
-          <div className="border-t border-slate-800/80 pt-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-slate-300">Den / období zápasu</span>
-              <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                {dayCounts[timeWindow]} dostupných
-              </span>
-            </div>
-            <div
-              role="group"
-              aria-label="Filtr dne zápasu"
-              className="mt-1.5 grid grid-cols-4 gap-1.5"
-            >
-              {DAY_FILTER_OPTIONS.map((opt) => {
-                const active = timeWindow === opt;
-                const count = dayCounts[opt];
-                const isDisabled = opt !== 'Vše' && count === 0 && !active;
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    disabled={isDisabled}
-                    onClick={() => handleSelectTimeWindow(opt)}
-                    aria-pressed={active}
-                    className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
-                      active
-                        ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
-                        : isDisabled
-                        ? 'cursor-not-allowed border-slate-800/60 bg-[#090D16]/60 text-slate-600'
-                        : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
-                    }`}
-                  >
-                    <span>{opt}</span>
-                    <span
-                      className={`font-mono text-[10px] tabular-nums ${
-                        active ? 'text-emerald-300/90' : isDisabled ? 'text-slate-600' : 'text-slate-500'
-                      }`}
-                    >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 2. Exact Leg Count Selector */}
-          <div className="border-t border-slate-800/80 pt-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-slate-300">Počet zápasů na tiket</span>
-              <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                {exactLegsCount === null ? 'Dle strategie' : `Přesně ${exactLegsCount}`}
-              </span>
-            </div>
-            <div
-              role="group"
-              aria-label="Počet zápasů na tiket"
-              className="mt-1.5 grid grid-cols-5 gap-1.5"
-            >
-              {LEG_COUNT_OPTIONS.map((opt) => {
-                const active = exactLegsCount === opt.value;
-                return (
-                  <button
-                    key={opt.label}
-                    type="button"
-                    onClick={() => handleSelectLegsCount(opt.value)}
-                    aria-pressed={active}
-                    className={`inline-flex min-h-[44px] items-center justify-center rounded-xl border font-mono text-xs font-semibold tabular-nums transition-colors whitespace-nowrap ${
-                      active
-                        ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
-                        : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 3A. Minimum Match Probability Slider */}
-          <div className="border-t border-slate-800/80 pt-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <label
-                htmlFor="min-prob-slider"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Minimální pravděpodobnost (%)</span>
-              </label>
-              <span className="font-mono text-sm font-bold tabular-nums text-emerald-300">
-                {minMatchProbability} %
-              </span>
-            </div>
-
-            <input
-              id="min-prob-slider"
-              type="range"
-              min={25}
-              max={85}
-              step={1}
-              value={minMatchProbability}
-              onChange={(e) => {
-                setMinMatchProbability(Number(e.target.value));
-                setVariationIndex(0);
-                setSavedFeedback(false);
-              }}
-              className="mt-2.5 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
-            />
-
-            <div className="mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500">
-              <span>25 %</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setMinMatchProbability(recommendedMinProb);
-                  setVariationIndex(0);
-                  setSavedFeedback(false);
-                }}
-                className={`transition-colors hover:text-emerald-300 ${
-                  minMatchProbability === recommendedMinProb
-                    ? 'font-semibold text-emerald-400'
-                    : 'text-slate-400'
-                }`}
-              >
-                Auto {recommendedMinProb} %
-              </button>
-              <span
-                className={`font-semibold ${
-                  eligibleMatchesCount > 0 ? 'text-slate-300' : 'text-rose-400'
-                }`}
-              >
-                {eligibleMatchesCount}/{nonNegativeSportMatchesCount} zápasů
-              </span>
-              <span>85 %</span>
-            </div>
-
-            {isLowProbCapped && (
-              <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-200">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
-                <span>
-                  Limit pod 45 %: režim Vyvážený v režimu Auto omezuje tiket na max. 1–2 zápasy.
+              {/* 1. Compact Horizontal Strategy Switcher */}
+              <div>
+                <span className="block text-xs font-semibold text-slate-300">
+                  {isEn ? 'Ticket Strategy' : 'Strategie tiketu'}
                 </span>
+                <div
+                  role="group"
+                  aria-label={isEn ? 'Select ticket strategy' : 'Výběr strategie tiketu'}
+                  className="mt-1.5 grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-[#090D16] p-1"
+                >
+                  {ticketModes.map((mode) => {
+                    const Icon = mode.icon;
+                    const active = ticketStyle === mode.id;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => handleSelectStyle(mode.id)}
+                        aria-pressed={active}
+                        className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                          active
+                            ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                            : 'text-slate-300 hover:bg-slate-800/60 hover:text-slate-100'
+                        }`}
+                      >
+                        <Icon className="h-3.5 w-3.5 shrink-0" />
+                        <span>{mode.shortTitle}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-snug text-slate-400">
+                  {activeMode.summary}
+                </p>
               </div>
-            )}
-          </div>
 
-          {/* 3B. Compact Single-Row Budget + Bankroll Button */}
-          <div className="border-t border-slate-800/80 pt-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="generator-budget" className="text-xs font-semibold text-slate-300">
-                Rozpočet (Kč)
-              </label>
-              <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                Bankroll: {formatCZK(currentBankroll)}
-              </span>
-            </div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <input
-                id="generator-budget"
-                type="text"
-                inputMode="numeric"
-                placeholder="0"
-                value={budgetInput}
-                onChange={(e) => {
-                  setBudgetInput(sanitizeIntegerInput(e.target.value));
-                  setSavedFeedback(false);
-                }}
-                className="min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setBudgetInput(String(Math.max(5, Math.round(currentBankroll))));
-                  setSavedFeedback(false);
-                }}
-                className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-500/50 hover:bg-slate-800/70 whitespace-nowrap"
-              >
-                Použít bankroll
-              </button>
-            </div>
-          </div>
-
-          {/* 3C. Available Sports Filter (strictly sports with >= 1 match) */}
-          <div className="border-t border-slate-800/80 pt-3.5">
-            <span className="block text-xs font-semibold text-slate-300">Zahrnuté sporty</span>
-
-            {availableSports.length === 0 ? (
-              <p className="mt-2 text-xs text-slate-400">
-                Momentálně nejsou dostupné žádné zápasy pro generování tiketu.
-              </p>
-            ) : (
-              <div className="mt-2 grid grid-cols-2 gap-1.5">
-                {availableSports.map((sport) => {
-                  const active = selectedSports.includes(sport);
-                  const count = sportCounts.get(sport)?.eligible ?? 0;
-                  return (
-                    <button
-                      key={sport}
-                      type="button"
-                      onClick={() => toggleSport(sport)}
-                      className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
-                        active
-                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
-                          : 'border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      <span className="truncate">{sport}</span>
-                      <span className="font-mono text-[11px] tabular-nums opacity-80">{count}</span>
-                    </button>
-                  );
-                })}
+              {/* 1B. Compact Day / Time Window Selector */}
+              <div className="border-t border-slate-800/80 pt-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-300">
+                    {isEn ? 'Match Day / Period' : 'Den / období zápasu'}
+                  </span>
+                  <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                    {dayCounts[timeWindow]} {isEn ? 'available' : 'dostupných'}
+                  </span>
+                </div>
+                <div
+                  role="group"
+                  aria-label={isEn ? 'Match day filter' : 'Filtr dne zápasu'}
+                  className="mt-1.5 grid grid-cols-4 gap-1.5"
+                >
+                  {DAY_FILTER_OPTIONS.map((opt) => {
+                    const active = timeWindow === opt;
+                    const count = dayCounts[opt];
+                    const isDisabled = opt !== 'Vše' && count === 0 && !active;
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => handleSelectTimeWindow(opt)}
+                        aria-pressed={active}
+                        className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                          active
+                            ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
+                            : isDisabled
+                            ? 'cursor-not-allowed border-slate-800/60 bg-[#090D16]/60 text-slate-600'
+                            : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                        }`}
+                      >
+                        <span>{translateTimeWindow(opt, language)}</span>
+                        <span
+                          className={`font-mono text-[10px] tabular-nums ${
+                            active
+                              ? 'text-emerald-300/90'
+                              : isDisabled
+                              ? 'text-slate-600'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            )}
-          </div>
 
-          {customMatches.length > 0 && (
-            <div className="space-y-2 border-t border-slate-800/80 pt-3.5">
-              <span className="block text-xs font-semibold text-slate-300">
-                Uložené vlastní zápasy ({customMatches.length})
-              </span>
-              <div className="space-y-1.5">
-                {customMatches.map((cm) => (
-                  <div
-                    key={cm.id}
-                    className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-[#0B101B] px-3 py-2 text-xs"
+              {/* 2. Exact Leg Count Selector */}
+              <div className="border-t border-slate-800/80 pt-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-300">
+                    {isEn ? 'Matches on Ticket' : 'Počet zápasů na tiket'}
+                  </span>
+                  <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                    {exactLegsCount === null
+                      ? isEn
+                        ? 'By strategy'
+                        : 'Dle strategie'
+                      : isEn
+                      ? `Exact ${exactLegsCount}`
+                      : `Přesně ${exactLegsCount}`}
+                  </span>
+                </div>
+                <div
+                  role="group"
+                  aria-label={isEn ? 'Matches on ticket' : 'Počet zápasů na tiket'}
+                  className="mt-1.5 grid grid-cols-5 gap-1.5"
+                >
+                  {LEG_COUNT_OPTIONS.map((opt) => {
+                    const active = exactLegsCount === opt.value;
+                    return (
+                      <button
+                        key={opt.label}
+                        type="button"
+                        onClick={() => handleSelectLegsCount(opt.value)}
+                        aria-pressed={active}
+                        className={`inline-flex min-h-[44px] items-center justify-center rounded-xl border font-mono text-xs font-semibold tabular-nums transition-colors whitespace-nowrap ${
+                          active
+                            ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-300'
+                            : 'border-slate-800 bg-[#090D16] text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3A. Minimum Match Probability Slider */}
+              <div className="border-t border-slate-800/80 pt-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="min-prob-slider"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300"
                   >
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-slate-200">
-                        {cm.homeTeam} vs. {cm.awayTeam}
-                      </p>
-                      <p className="font-mono text-[11px] tabular-nums text-slate-400">
-                        {cm.sport} · Kurz {formatOdds(cm.odds.betano)} · {formatPercent(cm.aiProbability)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteCustomMatch(cm.id)}
-                      aria-label={`Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`}
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>
+                      {isEn ? 'Min. Win Probability (%)' : 'Minimální pravděpodobnost (%)'}
+                    </span>
+                  </label>
+                  <span className="font-mono text-sm font-bold tabular-nums text-emerald-300">
+                    {isEn ? `${minMatchProbability}%` : `${minMatchProbability} %`}
+                  </span>
+                </div>
+
+                <input
+                  id="min-prob-slider"
+                  type="range"
+                  min={25}
+                  max={85}
+                  step={1}
+                  value={minMatchProbability}
+                  onChange={(e) => {
+                    setMinMatchProbability(Number(e.target.value));
+                    setVariationIndex(0);
+                    setSavedFeedback(false);
+                  }}
+                  className="mt-2.5 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-800 accent-emerald-400"
+                />
+
+                <div className="mt-1.5 flex items-center justify-between gap-2 font-mono text-[11px] tabular-nums text-slate-500">
+                  <span>{isEn ? '25%' : '25 %'}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMinMatchProbability(recommendedMinProb);
+                      setVariationIndex(0);
+                      setSavedFeedback(false);
+                    }}
+                    className={`transition-colors hover:text-emerald-300 ${
+                      minMatchProbability === recommendedMinProb
+                        ? 'font-semibold text-emerald-400'
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    Auto {isEn ? `${recommendedMinProb}%` : `${recommendedMinProb} %`}
+                  </button>
+                  <span
+                    className={`font-semibold ${
+                      eligibleMatchesCount > 0 ? 'text-slate-300' : 'text-rose-400'
+                    }`}
+                  >
+                    {eligibleMatchesCount}/{nonNegativeSportMatchesCount}{' '}
+                    {isEn ? 'matches' : 'zápasů'}
+                  </span>
+                  <span>{isEn ? '85%' : '85 %'}</span>
+                </div>
+
+                {isLowProbCapped && (
+                  <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-200">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                    <span>
+                      {isEn
+                        ? 'Threshold below 45%: Balanced Auto mode limits the ticket to 1–2 matches.'
+                        : 'Limit pod 45 %: režim Vyvážený v režimu Auto omezuje tiket na max. 1–2 zápasy.'}
+                    </span>
                   </div>
-                ))}
+                )}
               </div>
-            </div>
-          )}
+
+              {/* 3B. Compact Single-Row Budget + Bankroll Button */}
+              <div className="border-t border-slate-800/80 pt-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="generator-budget" className="text-xs font-semibold text-slate-300">
+                    {isEn ? 'Budget (CZK)' : 'Rozpočet (Kč)'}
+                  </label>
+                  <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                    Bankroll: {formatCZK(currentBankroll, language)}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <input
+                    id="generator-budget"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={budgetInput}
+                    onChange={(e) => {
+                      setBudgetInput(sanitizeIntegerInput(e.target.value));
+                      setSavedFeedback(false);
+                    }}
+                    className="min-h-[44px] min-w-0 flex-1 rounded-xl border border-slate-800 bg-[#090D16] px-3.5 font-mono text-base font-bold tabular-nums text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/60 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBudgetInput(String(Math.max(5, Math.round(currentBankroll))));
+                      setSavedFeedback(false);
+                    }}
+                    className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-[#090D16] px-3.5 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:border-emerald-500/50 hover:bg-slate-800/70 whitespace-nowrap"
+                  >
+                    {isEn ? 'Use bankroll' : 'Použít bankroll'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 3C. Available Sports Filter (strictly sports with >= 1 match) */}
+              <div className="border-t border-slate-800/80 pt-3.5">
+                <span className="block text-xs font-semibold text-slate-300">
+                  {isEn ? 'Included Sports' : 'Zahrnuté sporty'}
+                </span>
+
+                {availableSports.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-400">
+                    {isEn
+                      ? 'No matches are currently available for ticket generation.'
+                      : 'Momentálně nejsou dostupné žádné zápasy pro generování tiketu.'}
+                  </p>
+                ) : (
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                    {availableSports.map((sport) => {
+                      const active = selectedSports.includes(sport);
+                      const count = sportCounts.get(sport)?.eligible ?? 0;
+                      return (
+                        <button
+                          key={sport}
+                          type="button"
+                          onClick={() => toggleSport(sport)}
+                          className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
+                            active
+                              ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
+                              : 'border-slate-800 bg-[#0B101B] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          <span className="truncate">{translateSport(sport, language)}</span>
+                          <span className="font-mono text-[11px] tabular-nums opacity-80">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {customMatches.length > 0 && (
+                <div className="space-y-2 border-t border-slate-800/80 pt-3.5">
+                  <span className="block text-xs font-semibold text-slate-300">
+                    {isEn
+                      ? `Saved Custom Matches (${customMatches.length})`
+                      : `Uložené vlastní zápasy (${customMatches.length})`}
+                  </span>
+                  <div className="space-y-1.5">
+                    {customMatches.map((cm) => (
+                      <div
+                        key={cm.id}
+                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-[#0B101B] px-3 py-2 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-slate-200">
+                            {cm.homeTeam} vs. {cm.awayTeam}
+                          </p>
+                          <p className="font-mono text-[11px] tabular-nums text-slate-400">
+                            {translateSport(cm.sport, language)} · {isEn ? 'Odds' : 'Kurz'}{' '}
+                            {formatOdds(cm.odds.betano)} ·{' '}
+                            {formatPercent(cm.aiProbability, false, language)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCustomMatch(cm.id)}
+                          aria-label={
+                            isEn
+                              ? `Delete custom match ${cm.homeTeam} vs. ${cm.awayTeam}`
+                              : `Smazat vlastní zápas ${cm.homeTeam} vs. ${cm.awayTeam}`
+                          }
+                          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-800 bg-[#090D16] text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -812,12 +914,20 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
             <div className="rounded-2xl border border-slate-800/90 bg-[#111827] p-6 text-center sm:p-8">
               <p className="font-display text-lg font-semibold text-slate-200">
                 {nonNegativeSportMatchesCount === 0
-                  ? 'Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)'
+                  ? isEn
+                    ? 'No match in the selected sports has non-negative Value (≥ 0.0%)'
+                    : 'Žádný zápas ve vybraných sportech nemá nezáporné Value (≥ 0,0 %)'
+                  : isEn
+                  ? `No match with non-negative Value (≥ 0.0%) meets the ${minMatchProbability}% threshold`
                   : `Žádný zápas s nezáporným Value (≥ 0,0 %) nesplňuje limit ${minMatchProbability} %`}
               </p>
               <p className="mt-1.5 text-sm text-slate-400">
                 {nonNegativeSportMatchesCount === 0
-                  ? 'Zápasy se záporným Value (pod 0,0 %) generátor nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas.'
+                  ? isEn
+                    ? 'Matches with negative Value (< 0.0%) are excluded by the generator. Enable more sports, refresh odds, or add a custom match.'
+                    : 'Zápasy se záporným Value (pod 0,0 %) generátor nezařazuje. Zapněte více sportů, aktualizujte kurzy nebo přidejte vlastní zápas.'
+                  : isEn
+                  ? 'Lower the minimum probability slider or enable more sports to build a ticket.'
                   : 'Snižte posuvník minimální pravděpodobnosti nebo zapněte více sportů pro sestavení tiketu.'}
               </p>
               <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
@@ -827,7 +937,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                     onClick={() => handleSelectTimeWindow('Vše')}
                     className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                   >
-                    Zobrazit všechny dny ({dayCounts.Vše})
+                    {isEn ? `Show All Days (${dayCounts.Vše})` : `Zobrazit všechny dny (${dayCounts.Vše})`}
                   </button>
                 )}
                 <button
@@ -838,7 +948,9 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   }}
                   className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400"
                 >
-                  Doporučený limit ({recommendedMinProb} %)
+                  {isEn
+                    ? `Recommended Threshold (${recommendedMinProb}%)`
+                    : `Doporučený limit (${recommendedMinProb} %)`}
                 </button>
                 <button
                   type="button"
@@ -848,7 +960,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   }}
                   className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                 >
-                  Vybrat všechny sporty
+                  {isEn ? 'Select All Sports' : 'Vybrat všechny sporty'}
                 </button>
               </div>
             </div>
@@ -861,53 +973,54 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                     <span className="font-semibold text-emerald-400">{activeMode.shortTitle}</span>
                     <span aria-hidden="true">·</span>
                     <span className="font-mono tabular-nums">
-                      Limit ≥ {generated.minMatchProbability} %
+                      {isEn
+                        ? `Threshold ≥ ${generated.minMatchProbability}%`
+                        : `Limit ≥ ${generated.minMatchProbability} %`}
                     </span>
                     <span aria-hidden="true">·</span>
                     <span className={riskTextClass}>
-                      Riziko: {generated.estimatedRisk}
+                      {isEn ? 'Risk:' : 'Riziko:'}{' '}
+                      {translateEstimatedRisk(generated.estimatedRisk, language)}
                     </span>
                   </div>
                   <h2 className="mt-1 font-display text-lg font-bold text-slate-50 sm:text-xl">
-                    Sestavený tiket ({generated.legs.length}{' '}
-                    {generated.legs.length === 1
-                      ? 'zápas'
-                      : generated.legs.length <= 4
-                      ? 'zápasy'
-                      : 'zápasů'}
-                    )
+                    {isEn ? 'Generated Ticket' : 'Sestavený tiket'} (
+                    {formatMatchCountLabel(generated.legs.length, language)})
                   </h2>
                 </div>
 
                 {generated.availableCombosCount <= 1 ? (
                   <span className="inline-flex min-h-[36px] items-center self-start rounded-xl border border-slate-800 bg-[#090D16] px-3 py-1.5 text-xs font-medium text-slate-500 sm:self-auto">
-                    Jediná dostupná kombinace
+                    {isEn ? 'Single available combo' : 'Jediná dostupná kombinace'}
                   </span>
                 ) : (
                   <div
                     role="group"
-                    aria-label="Listování kombinacemi tiketu"
+                    aria-label={
+                      isEn ? 'Browse ticket combinations' : 'Listování kombinacemi tiketu'
+                    }
                     className="inline-flex items-center self-start overflow-hidden rounded-xl border border-slate-700 bg-slate-900 sm:self-auto"
                   >
                     <button
                       type="button"
                       onClick={handlePrevVariation}
-                      aria-label="Předchozí kombinace"
-                      title="Předchozí kombinace"
+                      aria-label={isEn ? 'Previous combination' : 'Předchozí kombinace'}
+                      title={isEn ? 'Previous combination' : 'Předchozí kombinace'}
                       className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-r border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
                     >
                       <ChevronLeft className="h-4 w-4" />
                     </button>
 
                     <span className="px-3 py-1.5 font-mono text-xs font-semibold tabular-nums text-slate-200 whitespace-nowrap">
-                      Kombinace {currentComboPosition} / {generated.availableCombosCount}
+                      {isEn ? 'Combo' : 'Kombinace'} {currentComboPosition} /{' '}
+                      {generated.availableCombosCount}
                     </span>
 
                     <button
                       type="button"
                       onClick={handleNextVariation}
-                      aria-label="Další kombinace"
-                      title="Další kombinace"
+                      aria-label={isEn ? 'Next combination' : 'Další kombinace'}
+                      title={isEn ? 'Next combination' : 'Další kombinace'}
                       className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center border-l border-slate-700/80 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
                     >
                       <ChevronRight className="h-4 w-4" />
@@ -919,49 +1032,61 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               {/* Compact 2x2 Ticket Overview Grid */}
               <div className="mt-3.5 grid grid-cols-2 gap-2.5">
                 <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
-                  <span className="block text-[11px] text-slate-400">Šance na výhru</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {isEn ? 'Win Probability' : 'Šance na výhru'}
+                  </span>
                   <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-50 sm:text-xl">
-                    {formatPercent(generated.totalProbability)}
+                    {formatPercent(generated.totalProbability, false, language)}
                   </span>
                 </div>
 
                 <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
-                  <span className="block text-[11px] text-slate-400">Celkový kurz</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {isEn ? 'Total Odds' : 'Celkový kurz'}
+                  </span>
                   <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-400 sm:text-xl">
                     {formatOdds(generated.totalOdds)}
                   </span>
                 </div>
 
                 <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
-                  <span className="block text-[11px] text-slate-400">Doporučený vklad</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {isEn ? 'Recommended Stake' : 'Doporučený vklad'}
+                  </span>
                   <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-slate-100 sm:text-xl">
-                    {formatCZK(generated.recommendedStake)}
+                    {formatCZK(generated.recommendedStake, language)}
                   </span>
                 </div>
 
                 <div className="rounded-xl border border-slate-800/80 bg-[#0B101B] p-3">
-                  <span className="block text-[11px] text-slate-400">Potenciální výhra</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {isEn ? 'Potential Win' : 'Potenciální výhra'}
+                  </span>
                   <span className="mt-0.5 block font-mono text-lg font-bold tabular-nums text-emerald-300 sm:text-xl">
-                    {formatCZK(calculatedWin)}
+                    {formatCZK(calculatedWin, language)}
                   </span>
                 </div>
               </div>
 
               {/* Compact Probability & Note Summary */}
               <p className="mt-2.5 text-xs leading-relaxed text-slate-400">
-                {generated.note} Vklad{' '}
+                {localizedGeneratedNote}{' '}
+                {isEn ? 'Stake' : 'Vklad'}{' '}
                 <span className="font-mono font-semibold tabular-nums text-slate-200">
-                  {((generated.recommendedStake / safeBudget) * 100).toFixed(1)} %
+                  {formatPercent((generated.recommendedStake / safeBudget) * 100, false, language)}
                 </span>{' '}
-                rozpočtu.
+                {isEn ? 'of budget.' : 'rozpočtu.'}
               </p>
 
               {/* Legs List */}
               <div className="mt-4 divide-y divide-slate-800/80 rounded-xl border border-slate-800/80 bg-[#0B101B]">
                 {generated.legs.map((leg, idx) => {
-                  const geminiReason = aiReasons[leg.matchId];
-                  const statFallback = statFallbackReasons[leg.matchId];
-                  const activeReason = geminiReason || statFallback?.text;
+                  const geminiReason = getCachedReasonForLang(aiReasons, leg.matchId, language);
+                  const statEntry =
+                    statFallbackReasons[leg.matchId]?.lang === language
+                      ? statFallbackReasons[leg.matchId]
+                      : undefined;
+                  const activeReason = geminiReason || statEntry?.text;
                   const isExpanded = Boolean(expandedMatchIds[leg.matchId] && activeReason);
                   const isLoadingReason = Boolean(loadingMatchIds[leg.matchId]);
 
@@ -971,33 +1096,40 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                         <div className="min-w-0 space-y-1">
                           <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
                             <span className="font-mono text-slate-500">#{idx + 1}</span>
-                            <span>{leg.sport}</span>
+                            <span>{translateSport(leg.sport, language)}</span>
                             <span aria-hidden="true">·</span>
                             <span>{leg.league}</span>
                             <span aria-hidden="true">·</span>
-                            <span className="font-mono tabular-nums">{leg.kickoffTime}</span>
+                            <span className="font-mono tabular-nums">
+                              {localizeKickoffTime(leg.kickoffTime, language)}
+                            </span>
                           </div>
                           <p className="font-display text-sm font-bold text-slate-100 sm:text-base">
                             {leg.homeTeam} vs. {leg.awayTeam}
                           </p>
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                            <span className="font-semibold text-emerald-300">{leg.recommendedPick}</span>
+                            <span className="font-semibold text-emerald-300">
+                              {translateRecommendedPick(leg.recommendedPick, language)}
+                            </span>
                             <span className="font-mono tabular-nums text-slate-300">
-                              Šance {formatPercent(leg.aiProbability)}
+                              {isEn ? 'Prob.' : 'Šance'}{' '}
+                              {formatPercent(leg.aiProbability, false, language)}
                             </span>
                             <span
                               className={`font-mono tabular-nums ${
                                 leg.valueScore > 0 ? 'text-emerald-400' : 'text-slate-400'
                               }`}
                             >
-                              Value {formatPercent(leg.valueScore, true)}
+                              Value {formatPercent(leg.valueScore, true, language)}
                             </span>
                           </div>
                         </div>
 
                         <div className="flex flex-wrap items-center justify-between gap-2.5 shrink-0 sm:justify-end">
                           <div className="text-left sm:text-right">
-                            <span className="block text-[11px] text-slate-400">Betano kurz</span>
+                            <span className="block text-[11px] text-slate-400">
+                              {isEn ? 'Betano Odds' : 'Betano kurz'}
+                            </span>
                             <span className="font-mono text-base font-bold tabular-nums text-slate-100">
                               {formatOdds(leg.betanoOdds)}
                             </span>
@@ -1008,10 +1140,12 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               href={BETANO_HOME_URL}
                               target="_blank"
                               rel="noopener noreferrer"
-                              onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
+                              onClick={() =>
+                                onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)
+                              }
                               className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                             >
-                              <span>Otevřít na Betanu</span>
+                              <span>{isEn ? 'Open on Betano' : 'Otevřít na Betanu'}</span>
                               <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
                             </a>
 
@@ -1019,7 +1153,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               href={buildTipsportSearchUrl(leg.homeTeam, leg.awayTeam)}
                               target="_blank"
                               rel="noopener noreferrer"
-                              title={`Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`}
+                              title={
+                                isEn
+                                  ? `Search ${leg.homeTeam} vs. ${leg.awayTeam} on Tipsport`
+                                  : `Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`
+                              }
                               className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
                             >
                               <span>Tipsport</span>
@@ -1038,7 +1176,11 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                                 <Sparkles className="h-3 w-3 shrink-0" />
                                 <span>
                                   {geminiReason
-                                    ? `${aiModels[leg.matchId] ?? 'gemini-3-flash-preview'} · AI analýza`
+                                    ? `${aiModels[leg.matchId] ?? 'gemini-3-flash-preview'} · ${
+                                        isEn ? 'AI Analysis' : 'AI analýza'
+                                      }`
+                                    : isEn
+                                    ? 'Statistical Match Breakdown'
                                     : 'Statistický rozbor zápasu'}
                                 </span>
                               </span>
@@ -1047,15 +1189,15 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                                 onClick={() => handleCollapseAnalysis(leg.matchId)}
                                 className="inline-flex min-h-[30px] items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition-colors hover:border-slate-700 hover:text-white"
                               >
-                                <span>Sbalit</span>
+                                <span>{isEn ? 'Collapse' : 'Sbalit'}</span>
                                 <ChevronUp className="h-3.5 w-3.5" />
                               </button>
                             </div>
                             {renderFormattedGeminiReasoning(activeReason)}
                           </div>
-                          {!geminiReason && statFallback?.apiStatus && (
+                          {!geminiReason && statEntry?.apiStatus && (
                             <p className="mt-1.5 px-1 font-mono text-[11px] leading-snug text-slate-500">
-                              Stav API: {statFallback.apiStatus}
+                              {isEn ? 'API status:' : 'Stav API:'} {statEntry.apiStatus}
                             </p>
                           )}
                         </div>
@@ -1075,9 +1217,15 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                               )}
                               <span>
                                 {isLoadingReason
-                                  ? 'Načítám analýzu...'
+                                  ? isEn
+                                    ? 'Loading analysis...'
+                                    : 'Načítám analýzu...'
                                   : activeReason
-                                  ? 'Zobrazit AI analýzu (uloženo)'
+                                  ? isEn
+                                    ? 'Show AI Analysis (saved)'
+                                    : 'Zobrazit AI analýzu (uloženo)'
+                                  : isEn
+                                  ? 'Show AI Analysis'
                                   : 'Zobrazit AI analýzu'}
                               </span>
                             </button>
@@ -1101,7 +1249,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
               <div className="mt-4 flex flex-col gap-3 border-t border-slate-800/80 pt-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="w-full sm:w-44">
                   <label htmlFor="actual-stake-input" className="block text-xs font-medium text-slate-400">
-                    Vklad pro uložení (Kč)
+                    {isEn ? 'Stake to Save (CZK)' : 'Vklad pro uložení (Kč)'}
                   </label>
                   <input
                     id="actual-stake-input"
@@ -1130,12 +1278,14 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                   {savedFeedback ? (
                     <>
                       <Check className="h-4 w-4 shrink-0" />
-                      <span>Uloženo do Bankrollu</span>
+                      <span>{isEn ? 'Saved to Bankroll' : 'Uloženo do Bankrollu'}</span>
                     </>
                   ) : (
                     <>
                       <BookmarkCheck className="h-4 w-4 shrink-0" />
-                      <span>Uložit tiket do Bankrollu</span>
+                      <span>
+                        {isEn ? 'Save Ticket to Bankroll' : 'Uložit tiket do Bankrollu'}
+                      </span>
                     </>
                   )}
                 </button>

@@ -1,3 +1,5 @@
+import { AppLanguage } from '../i18n/LanguageContext';
+import { translateTicketLabel } from '../i18n/translations';
 import {
   AppSettings,
   MatchAnalysis,
@@ -195,7 +197,8 @@ export interface TicketCountdownStatus {
 export function formatTicketCountdownStatus(
   ticket: Ticket,
   nowMs: number,
-  activeMatches: MatchAnalysis[] = []
+  activeMatches: MatchAnalysis[] = [],
+  language: AppLanguage = 'cs'
 ): TicketCountdownStatus | null {
   if (ticket.status !== 'pending') return null;
 
@@ -209,7 +212,7 @@ export function formatTicketCountdownStatus(
   if (diffMs <= 0) {
     return {
       state: 'live',
-      label: 'Právě se hraje',
+      label: language === 'en' ? 'Live now' : 'Právě se hraje',
       kickoffMs,
       matchTitle,
     };
@@ -219,7 +222,7 @@ export function formatTicketCountdownStatus(
   if (totalMinutes < 60) {
     return {
       state: 'upcoming',
-      label: `Začíná za ${totalMinutes} min`,
+      label: language === 'en' ? `Starts in ${totalMinutes} min` : `Začíná za ${totalMinutes} min`,
       kickoffMs,
       matchTitle,
     };
@@ -230,7 +233,14 @@ export function formatTicketCountdownStatus(
     const mins = totalMinutes % 60;
     return {
       state: 'upcoming',
-      label: mins === 0 ? `Začíná za ${hours} h` : `Začíná za ${hours} h ${mins} min`,
+      label:
+        language === 'en'
+          ? mins === 0
+            ? `Starts in ${hours}h`
+            : `Starts in ${hours}h ${mins}m`
+          : mins === 0
+          ? `Začíná za ${hours} h`
+          : `Začíná za ${hours} h ${mins} min`,
       kickoffMs,
       matchTitle,
     };
@@ -238,6 +248,14 @@ export function formatTicketCountdownStatus(
 
   const days = Math.floor(totalMinutes / (24 * 60));
   const remHours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  if (language === 'en') {
+    return {
+      state: 'upcoming',
+      label: remHours > 0 ? `Starts in ${days}d ${remHours}h` : `Starts in ${days}d`,
+      kickoffMs,
+      matchTitle,
+    };
+  }
   const daysWord = days === 1 ? '1 den' : days <= 4 ? `${days} dny` : `${days} dnů`;
   return {
     state: 'upcoming',
@@ -287,7 +305,8 @@ export function checkAndSendMatchStartNotifications(
   tickets: Ticket[],
   settings: Pick<AppSettings, 'notificationsEnabled' | 'notificationLeadMinutes'>,
   activeMatches: MatchAnalysis[] = [],
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  language: AppLanguage = 'cs'
 ): number {
   if (!settings.notificationsEnabled) return 0;
   if (!isBrowserNotificationSupported() || window.Notification.permission !== 'granted') {
@@ -313,13 +332,26 @@ export function checkAndSendMatchStartNotifications(
     }
 
     const matchName = `${earliest.leg.homeTeam} vs. ${earliest.leg.awayTeam}`;
+    const minsLeft = Math.max(1, Math.ceil(msUntilStart / 60000));
+    const ticketTitle = translateTicketLabel(ticket.label, language);
     const title =
-      msUntilStart <= 0
+      language === 'en'
+        ? msUntilStart <= 0
+          ? `Starting now: ${matchName}`
+          : `Starts in ${minsLeft} min: ${matchName}`
+        : msUntilStart <= 0
         ? `Právě začíná: ${matchName}`
-        : `Začíná za ${Math.max(1, Math.ceil(msUntilStart / 60000))} min: ${matchName}`;
-    const body = `Tiket: ${ticket.label} · Vklad ${formatCZK(ticket.actualStake)} · Možná výhra ${formatCZK(
-      ticket.potentialWin
-    )}`;
+        : `Začíná za ${minsLeft} min: ${matchName}`;
+    const body =
+      language === 'en'
+        ? `Ticket: ${ticketTitle} · Stake ${formatCZK(
+            ticket.actualStake,
+            'en'
+          )} · Potential win ${formatCZK(ticket.potentialWin, 'en')}`
+        : `Tiket: ${ticketTitle} · Vklad ${formatCZK(
+            ticket.actualStake,
+            'cs'
+          )} · Možná výhra ${formatCZK(ticket.potentialWin, 'cs')}`;
 
     if (sendBrowserNotification(title, body, `betedge-start-${ticket.id}`)) {
       markTicketNotified(ticket.id, 'start');
@@ -332,7 +364,8 @@ export function checkAndSendMatchStartNotifications(
 
 export function notifyTicketWinIfEligible(
   ticket: Ticket,
-  settings: Pick<AppSettings, 'notificationsEnabled'>
+  settings: Pick<AppSettings, 'notificationsEnabled'>,
+  language: AppLanguage = 'cs'
 ): boolean {
   // Strictly notify ONLY on winning tickets with positive payout/profit — complete silence on loss or refund
   if (ticket.status !== 'won' || ticket.profit <= 0) {
@@ -350,10 +383,18 @@ export function notifyTicketWinIfEligible(
     return false;
   }
 
-  const title = '🏆 Výherní tiket!';
-  const body = `Vyhrál jsi +${formatCZK(ticket.potentialWin)} (čistý zisk +${formatCZK(
-    ticket.profit
-  )}) · ${ticket.label}`;
+  const ticketTitle = translateTicketLabel(ticket.label, language);
+  const title = language === 'en' ? '🏆 Winning Ticket!' : '🏆 Výherní tiket!';
+  const body =
+    language === 'en'
+      ? `You won +${formatCZK(ticket.potentialWin, 'en')} (net profit +${formatCZK(
+          ticket.profit,
+          'en'
+        )}) · ${ticketTitle}`
+      : `Vyhrál jsi +${formatCZK(ticket.potentialWin, 'cs')} (čistý zisk +${formatCZK(
+          ticket.profit,
+          'cs'
+        )}) · ${ticketTitle}`;
 
   if (sendBrowserNotification(title, body, `betedge-win-${ticket.id}`)) {
     markTicketNotified(ticket.id, 'win');
