@@ -11672,6 +11672,11 @@ function formatUpdateTimeLabel(timestampMs) {
 	})} v ${timeStr}`;
 }
 var BETANO_HOME_URL = "https://www.betano.cz/";
+function buildTipsportSearchUrl(homeTeam, awayTeam) {
+	const query = [homeTeam.replace(/\(.*?\)/g, "").trim(), awayTeam.replace(/\(.*?\)/g, "").trim()].filter(Boolean).join(" ").trim();
+	if (!query) return "https://www.tipsport.cz/kurzy";
+	return `https://www.tipsport.cz/kurzy?q=${encodeURIComponent(query)}`;
+}
 function copyMatchForBetano(homeTeam, awayTeam, recommendedPick) {
 	const cleanHome = homeTeam.replace(/\(.*?\)/g, "").trim();
 	const cleanAway = awayTeam.replace(/\(.*?\)/g, "").trim();
@@ -15199,20 +15204,31 @@ var MatchFeed = ({ matches, selectedMatchIds, geminiApiKey, onToggleMatchOnSlip,
 								});
 							})()
 						] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "mt-3 flex flex-row items-center gap-2 border-t border-slate-800/70 pt-3",
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-								type: "button",
-								onClick: () => onToggleMatchOnSlip(match),
-								className: `inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:text-sm ${isSelected ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
-								children: isSelected ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Na tiketu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Přidat na tiket" })
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-								href: BETANO_HOME_URL,
-								target: "_blank",
-								rel: "noopener noreferrer",
-								onClick: () => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick),
-								className: "inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:text-sm",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 shrink-0 text-slate-400" })]
-							})]
+							className: "mt-3 flex flex-row items-center gap-1.5 border-t border-slate-800/70 pt-3 sm:gap-2",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									onClick: () => onToggleMatchOnSlip(match),
+									className: `inline-flex min-h-[42px] min-w-0 flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:px-3 sm:text-sm ${isSelected ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`,
+									children: isSelected ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "h-4 w-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Na tiketu" })] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "+ Přidat na tiket" })
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+									href: BETANO_HOME_URL,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									onClick: () => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick),
+									className: "inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/90 px-2.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:px-3 sm:text-sm",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 shrink-0 text-slate-400" })]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+									href: buildTipsportSearchUrl(match.homeTeam, match.awayTeam),
+									target: "_blank",
+									rel: "noopener noreferrer",
+									title: `Vyhledat ${match.homeTeam} vs. ${match.awayTeam} na Tipsportu`,
+									className: "inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/90 px-2.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:px-3 sm:text-sm",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Tipsport" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 shrink-0 text-slate-400" })]
+								})
+							]
 						})]
 					}, match.id);
 				})
@@ -16106,7 +16122,7 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 												})
 											]
 										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center justify-between gap-3 shrink-0 sm:justify-end",
+											className: "flex flex-wrap items-center justify-between gap-2.5 shrink-0 sm:justify-end",
 											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 												className: "text-left sm:text-right",
 												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
@@ -16116,13 +16132,23 @@ var TicketGenerator = ({ matches, currentBankroll, geminiApiKey, onSaveTicket, o
 													className: "font-mono text-base font-bold tabular-nums text-slate-100",
 													children: formatOdds(leg.betanoOdds)
 												})]
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-												href: BETANO_HOME_URL,
-												target: "_blank",
-												rel: "noopener noreferrer",
-												onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
-												className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center gap-1.5",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+													href: BETANO_HOME_URL,
+													target: "_blank",
+													rel: "noopener noreferrer",
+													onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
+													className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Otevřít na Betanu" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+													href: buildTipsportSearchUrl(leg.homeTeam, leg.awayTeam),
+													target: "_blank",
+													rel: "noopener noreferrer",
+													title: `Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`,
+													className: "inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Tipsport" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3.5 w-3.5 text-slate-400" })]
+												})]
 											})]
 										})]
 									}), isExpanded && activeReason ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -16750,18 +16776,29 @@ var BankrollStats = ({ tickets, initialBankroll, activeMatches, notificationsEna
 											]
 										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 											className: "flex items-center gap-3 shrink-0",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "font-mono font-semibold tabular-nums text-slate-200",
-												children: formatOdds(leg.betanoOdds)
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-												href: BETANO_HOME_URL,
-												target: "_blank",
-												rel: "noopener noreferrer",
-												onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
-												className: "inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300",
-												title: "Otevřít na Betanu",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
-											})]
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "font-mono font-semibold tabular-nums text-slate-200",
+													children: formatOdds(leg.betanoOdds)
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+													href: BETANO_HOME_URL,
+													target: "_blank",
+													rel: "noopener noreferrer",
+													onClick: () => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick),
+													className: "inline-flex items-center gap-1 text-slate-400 hover:text-emerald-300",
+													title: "Otevřít na Betanu",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+													href: buildTipsportSearchUrl(leg.homeTeam, leg.awayTeam),
+													target: "_blank",
+													rel: "noopener noreferrer",
+													className: "inline-flex items-center gap-1 text-slate-400 hover:text-white",
+													title: `Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`,
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Tipsport" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
+												})
+											]
 										})]
 									}, `${ticket.id}-${leg.matchId}-${i}`))
 								}),
@@ -17467,13 +17504,23 @@ var TicketSlipDrawer = ({ isOpen, onClose, selectedMatches, currentBankroll, onR
 										className: "text-slate-400",
 										children: ["AI ", formatPercent(m.aiProbability)]
 									})]
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
-									href: BETANO_HOME_URL,
-									target: "_blank",
-									rel: "noopener noreferrer",
-									onClick: () => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick),
-									className: "inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+										href: BETANO_HOME_URL,
+										target: "_blank",
+										rel: "noopener noreferrer",
+										onClick: () => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick),
+										className: "inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Betano" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3" })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", {
+										href: buildTipsportSearchUrl(m.homeTeam, m.awayTeam),
+										target: "_blank",
+										rel: "noopener noreferrer",
+										title: `Vyhledat ${m.homeTeam} vs. ${m.awayTeam} na Tipsportu`,
+										className: "inline-flex items-center gap-1 font-medium text-slate-300 hover:text-white",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Tipsport" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "h-3 w-3 text-slate-400" })]
+									})]
 								})]
 							})]
 						}, m.id))

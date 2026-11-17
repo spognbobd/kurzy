@@ -15,6 +15,7 @@ import {
 import { MatchAnalysis, SportFilter, TicketLeg, TimeWindow } from '../types/betting';
 import {
   BETANO_HOME_URL,
+  buildTipsportSearchUrl,
   formatOdds,
   formatPercent,
   isSuspiciousValueMatch,
@@ -676,11 +677,11 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                 </div>
 
                 {/* Single-Row Side-by-Side Actions */}
-                <div className="mt-3 flex flex-row items-center gap-2 border-t border-slate-800/70 pt-3">
+                <div className="mt-3 flex flex-row items-center gap-1.5 border-t border-slate-800/70 pt-3 sm:gap-2">
                   <button
                     type="button"
                     onClick={() => onToggleMatchOnSlip(match)}
-                    className={`inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:text-sm ${
+                    className={`inline-flex min-h-[42px] min-w-0 flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap sm:px-3 sm:text-sm ${
                       isSelected
                         ? 'border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
                         : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
@@ -701,9 +702,20 @@ export const MatchFeed: React.FC<MatchFeedProps> = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={() => onOpenBetano(match.homeTeam, match.awayTeam, match.recommendedPick)}
-                    className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:text-sm"
+                    className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/90 px-2.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:px-3 sm:text-sm"
                   >
                     <span>Betano</span>
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  </a>
+
+                  <a
+                    href={buildTipsportSearchUrl(match.homeTeam, match.awayTeam)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Vyhledat ${match.homeTeam} vs. ${match.awayTeam} na Tipsportu`}
+                    className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-900/90 px-2.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap sm:px-3 sm:text-sm"
+                  >
+                    <span>Tipsport</span>
                     <ExternalLink className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                   </a>
                 </div>

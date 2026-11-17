@@ -3,6 +3,7 @@ import { BookmarkCheck, ExternalLink, Trash2, X } from 'lucide-react';
 import { MatchAnalysis, Ticket } from '../types/betting';
 import {
   BETANO_HOME_URL,
+  buildTipsportSearchUrl,
   calculateSafeStake,
   formatCZK,
   formatOdds,
@@ -170,16 +171,28 @@ export const TicketSlipDrawer: React.FC<TicketSlipDrawerProps> = ({
                       </span>
                       <span className="text-slate-400">AI {formatPercent(m.aiProbability)}</span>
                     </div>
-                    <a
-                      href={BETANO_HOME_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick)}
-                      className="inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300"
-                    >
-                      <span>Betano</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={BETANO_HOME_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => onOpenBetano(m.homeTeam, m.awayTeam, m.recommendedPick)}
+                        className="inline-flex items-center gap-1 font-medium text-emerald-400 hover:text-emerald-300"
+                      >
+                        <span>Betano</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                      <a
+                        href={buildTipsportSearchUrl(m.homeTeam, m.awayTeam)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`Vyhledat ${m.homeTeam} vs. ${m.awayTeam} na Tipsportu`}
+                        className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-white"
+                      >
+                        <span>Tipsport</span>
+                        <ExternalLink className="h-3 w-3 text-slate-400" />
+                      </a>
+                    </div>
                   </div>
                 </div>
               ))}

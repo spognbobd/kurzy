@@ -60,6 +60,14 @@ export function formatUpdateTimeLabel(timestampMs: number | null): string | null
 
 export const BETANO_HOME_URL = 'https://www.betano.cz/';
 
+export function buildTipsportSearchUrl(homeTeam: string, awayTeam: string): string {
+  const cleanHome = homeTeam.replace(/\(.*?\)/g, '').trim();
+  const cleanAway = awayTeam.replace(/\(.*?\)/g, '').trim();
+  const query = [cleanHome, cleanAway].filter(Boolean).join(' ').trim();
+  if (!query) return 'https://www.tipsport.cz/kurzy';
+  return `https://www.tipsport.cz/kurzy?q=${encodeURIComponent(query)}`;
+}
+
 export function copyMatchForBetano(
   homeTeam: string,
   awayTeam: string,

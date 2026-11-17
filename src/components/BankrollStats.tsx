@@ -18,6 +18,7 @@ import {
 } from '../types/betting';
 import {
   BETANO_HOME_URL,
+  buildTipsportSearchUrl,
   formatCZK,
   formatOdds,
   formatPercent,
@@ -694,6 +695,16 @@ export const BankrollStats: React.FC<BankrollStatsProps> = ({
                             title="Otevřít na Betanu"
                           >
                             <span>Betano</span>
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                          <a
+                            href={buildTipsportSearchUrl(leg.homeTeam, leg.awayTeam)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-slate-400 hover:text-white"
+                            title={`Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`}
+                          >
+                            <span>Tipsport</span>
                             <ExternalLink className="h-3 w-3" />
                           </a>
                         </div>

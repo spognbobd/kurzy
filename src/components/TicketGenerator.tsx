@@ -28,6 +28,7 @@ import {
 } from '../types/betting';
 import {
   BETANO_HOME_URL,
+  buildTipsportSearchUrl,
   formatCZK,
   formatOdds,
   formatPercent,
@@ -994,7 +995,7 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between gap-3 shrink-0 sm:justify-end">
+                        <div className="flex flex-wrap items-center justify-between gap-2.5 shrink-0 sm:justify-end">
                           <div className="text-left sm:text-right">
                             <span className="block text-[11px] text-slate-400">Betano kurz</span>
                             <span className="font-mono text-base font-bold tabular-nums text-slate-100">
@@ -1002,16 +1003,29 @@ export const TicketGenerator: React.FC<TicketGeneratorProps> = ({
                             </span>
                           </div>
 
-                          <a
-                            href={BETANO_HOME_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
-                            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
-                          >
-                            <span>Otevřít na Betanu</span>
-                            <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
-                          </a>
+                          <div className="flex items-center gap-1.5">
+                            <a
+                              href={BETANO_HOME_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => onOpenBetano(leg.homeTeam, leg.awayTeam, leg.recommendedPick)}
+                              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
+                            >
+                              <span>Otevřít na Betanu</span>
+                              <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
+                            </a>
+
+                            <a
+                              href={buildTipsportSearchUrl(leg.homeTeam, leg.awayTeam)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`Vyhledat ${leg.homeTeam} vs. ${leg.awayTeam} na Tipsportu`}
+                              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
+                            >
+                              <span>Tipsport</span>
+                              <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
+                            </a>
+                          </div>
                         </div>
                       </div>
 
